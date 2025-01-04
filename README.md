@@ -5,7 +5,7 @@ FuzzyBucketTree is a flexible and efficient machine learning tree structure desi
 ## Key Features
 
 * **Smart Value Aggregation**
-  * Configurable "bucketing" of numerical values enables improved approximate pattern recognition
+  * Automatic "bucketing" of numerical values enables improved approximate pattern recognition
   * Values are intelligently grouped to identify meaningful patterns while reducing noise
   * Configurable bucket sizes per feature for fine-tuned control over pattern matching
 
@@ -104,6 +104,51 @@ public class CustomPredictionHandler<T> implements PredictionHandler<T> {
     }
 }
 ```
+
+## Auto-Tuning
+
+FuzzyBucketTree includes a powerful auto-tuning capability that optimizes both feature ordering and bucket configurations to maximize prediction accuracy.
+
+### Basic Auto-Tuning
+
+```java
+// Define feature options for tuning
+List<FeatureBucketOptions> featureOptions = Arrays.asList(
+    new FeatureBucketOptions("temperature", 1, new float[]{0.5f, 1.0f, 2.0f}),  // Try different bucket sizes
+    new FeatureBucketOptions("humidity", 1, null)  // No bucketing for this feature
+);
+
+// Create tuner with classification prediction
+FuzzyBucketTuner<String> tuner = new FuzzyBucketTuner<>(
+    featureOptions,
+    PredictionHandlers.classification(),
+    new ClassificationReporter<>()
+);
+
+// Train and tune using separate training/validation sets
+List<TrainingEntry<String>> training = loadTrainingData();
+List<TrainingEntry<String>> validation = loadValidationData();
+TunerResult<String> result = tuner.train(training, validation);
+
+// Access tuning results
+System.out.println("Final accuracy: " + result.getTotalAccuracy());
+result.getAccuracyReports().forEach((label, report) -> {
+    System.out.println(String.format(
+        "%s: %.2f%% accuracy (%d samples)",
+        label,
+        report.calcWeightedAccuracy() * 100,
+        report.getSamples()
+    ));
+});
+```
+
+The auto-tuner will:
+- Explore different feature orderings to find optimal tree structure
+- Test different bucket configuration combinations for each feature permutation
+- Evaluate combinations using validation data
+- Report detailed accuracy metrics per prediction label
+- Produce an optimized tree configuration for your use case
+- Stop early if a perfect result is found, or if no improvement is made (e.g. features are order agnositc)
 
 ## Contributing
 Holler
