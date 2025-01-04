@@ -22,7 +22,8 @@
                 <version>3.11.2</version>
                 <configuration>
                     <show>private</show>
-                    <source>${java.version}</source>
+                    <source>18</source>
+                    <release>18</release>
                     <encoding>UTF-8</encoding>
                     <additionalJOption>-Xdoclint:none</additionalJOption>
                 </configuration>
