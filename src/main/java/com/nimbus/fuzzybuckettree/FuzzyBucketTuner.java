@@ -25,24 +25,29 @@ public class FuzzyBucketTuner<T> {
     private static final ScheduledExecutorService scheduledExecutor
             = Executors.newSingleThreadScheduledExecutor();
 
-    private static final Semaphore semaphore = new Semaphore(NCPUS);
-
     private final List<FeatureBucketOptions> features;
     private final PredictionHandler predictionHandler;
     private final AccuracyReporter<T> accuracyReporter;
     private final AtomicReference<Float> bestAccuracy;
     private final BucketIterator bucketIterator;
     private final BucketPerformanceTracker bucketTracker;
+    private final Semaphore semaphore;
     private volatile TunerResult<T> bestResult;
 
     public FuzzyBucketTuner(List<FeatureBucketOptions> features, PredictionHandler<T> predictionHandler,
-                            AccuracyReporter<T> accuracyReporter) {
+                            AccuracyReporter<T> accuracyReporter, int concurrency) {
         this.features = features;
         this.predictionHandler = predictionHandler;
         this.accuracyReporter = accuracyReporter;
         this.bestAccuracy = new AtomicReference<>(0f);
         this.bucketIterator = new PatternedBucketIterator(features, 1);
-        this.bucketTracker = new BucketPerformanceTracker(0.1f);
+        this.bucketTracker = new BucketPerformanceTracker(0.2f);
+        this.semaphore = new Semaphore(Math.min(concurrency, NCPUS));
+    }
+
+    public FuzzyBucketTuner(List<FeatureBucketOptions> features, PredictionHandler<T> predictionHandler,
+                            AccuracyReporter<T> accuracyReporter) {
+        this(features, predictionHandler, accuracyReporter, NCPUS);
     }
 
     /**
