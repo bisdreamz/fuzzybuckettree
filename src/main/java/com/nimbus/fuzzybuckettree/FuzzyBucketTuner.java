@@ -10,6 +10,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -20,11 +21,8 @@ public class FuzzyBucketTuner<T> {
 
     private static final int NCPUS = Runtime.getRuntime().availableProcessors();
 
-    private static final ExecutorService executor = Executors.newFixedThreadPool(NCPUS);
-
-    private static final ScheduledExecutorService scheduledExecutor
-            = Executors.newSingleThreadScheduledExecutor();
-
+    private final ExecutorService executor;
+    private final ScheduledExecutorService scheduledExecutor;
     private final List<FeatureBucketOptions> features;
     private final PredictionHandler predictionHandler;
     private final AccuracyReporter<T> accuracyReporter;
@@ -36,6 +34,8 @@ public class FuzzyBucketTuner<T> {
 
     public FuzzyBucketTuner(List<FeatureBucketOptions> features, PredictionHandler<T> predictionHandler,
                             AccuracyReporter<T> accuracyReporter, int concurrency) {
+        this.executor = Executors.newFixedThreadPool(concurrency);
+        this.scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
         this.features = features;
         this.predictionHandler = predictionHandler;
         this.accuracyReporter = accuracyReporter;
@@ -75,6 +75,8 @@ public class FuzzyBucketTuner<T> {
         while (bucketIterator.hasMoreBatches()) {
             List<Map<String, float[]>> batch = bucketIterator.getNextBatch();
 
+            semaphore.acquireUninterruptibly();
+
             CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
                 for (Map<String, float[]> bucketPermutationMap : batch) {
                     int bucketKey = bucketTracker.shouldTest(bucketPermutationMap);
@@ -102,9 +104,8 @@ public class FuzzyBucketTuner<T> {
 
                     TunerResult<T> result = new TunerResult<>(featureConfigs, accuracyReporter, null);
 
-                    if (bucketKey > 0) {
+                    if (bucketKey > 0)
                         bucketTracker.recordPerformance(bucketKey, result.getTotalAccuracy());
-                    }
 
                     synchronized(bestBucketResult) {
                         if (bestBucketResult.get() == null ||
@@ -113,6 +114,8 @@ public class FuzzyBucketTuner<T> {
                         }
                     }
                 }
+
+                semaphore.release();
             }, executor);
 
             futures.add(future);
@@ -298,54 +301,69 @@ public class FuzzyBucketTuner<T> {
         ScheduledFuture statusFut = startMonitor(complete, permutations.size());
 
         CountDownLatch latch = new CountDownLatch(1);
+        AtomicBoolean shouldStop = new AtomicBoolean(false);
         for (List<String> featureOrderSet : permutations) {
-            try {
-                List<FeatureBucketOptions> featureBucketPermutation = featureOrderSet.stream().map(
-                        f -> featureBucketCache.get(f)).toList();
+            if (shouldStop.get())
+                break;
 
-                // We begin testing all bucket configs up until sampleRate coverage of feature permutations,
-                // then from there we only continue testing the top bucket option performers. This allows
-                // us to begin with a wide search field of bucket options, but quickly narrow it down to
-                // reduce wasted training time on bucket options that consistently perform poorly
-                boolean skipLowBucketPerformers = bucketMultiplier > NCPUS && (complete.get() / (float)permutations.size()) > sampleRate;
+            if (bucketMultiplier > 1)
+                semaphore.acquireUninterruptibly();
 
-                TunerResult<T> res = trainSet(featureBucketPermutation,
-                        trainingSample,
-                        validationSample,
-                        skipLowBucketPerformers).get();
+            executor.execute(() -> {
+                try {
+                    List<FeatureBucketOptions> featureBucketPermutation = featureOrderSet.stream().map(
+                            f -> featureBucketCache.get(f)).toList();
 
-                if (res == null)
-                    throw new RuntimeException("Bucket permutation trainSet call returned null TunerResult. Panic!");
+                    // We begin testing all bucket configs up until sampleRate coverage of feature permutations,
+                    // then from there we only continue testing the top bucket option performers. This allows
+                    // us to begin with a wide search field of bucket options, but quickly narrow it down to
+                    // reduce wasted training time on bucket options that consistently perform poorly
+                    boolean skipLowBucketPerformers = bucketMultiplier > NCPUS && (complete.get() / (float) permutations.size()) > sampleRate;
 
-                float resAccuracy = res.getTotalAccuracy();
-                float bestSoFar = bestAccuracy.getAndUpdate(curAccuracy
-                        -> resAccuracy > curAccuracy ? resAccuracy : curAccuracy);
+                    TunerResult<T> res = trainSet(featureBucketPermutation,
+                            trainingSample,
+                            validationSample,
+                            skipLowBucketPerformers).get();
 
-                if (bestResult == null || resAccuracy > bestSoFar) {
-                    bestResult = res;
-                    jobsSinceImprovement.set(0);
-                } else if (earlyStoppingJobs > 0 && jobsSinceImprovement.incrementAndGet() > earlyStoppingJobs) {
-                    System.out.println("No improvement in " + earlyStoppingJobs + ", exiting auto-tuning early");
+                    if (res == null)
+                        throw new RuntimeException("Bucket permutation trainSet call returned null TunerResult. Panic!");
+
+                    float resAccuracy = res.getTotalAccuracy();
+                    float bestSoFar = bestAccuracy.getAndUpdate(curAccuracy
+                            -> resAccuracy > curAccuracy ? resAccuracy : curAccuracy);
+
+                    if (bestResult == null || resAccuracy > bestSoFar) {
+                        bestResult = res;
+                        jobsSinceImprovement.set(0);
+                    } else if (earlyStoppingJobs > 0 && jobsSinceImprovement.incrementAndGet() > earlyStoppingJobs) {
+                        System.out.println("No improvement in " + earlyStoppingJobs + ", exiting auto-tuning early");
+                        latch.countDown();
+                        shouldStop.set(true);
+                        return;
+                    }
+
+                    if (complete.incrementAndGet() == permutations.size()) {
+                        latch.countDown();
+                        System.out.println("Finished all permutations");
+                        shouldStop.set(true);
+                        return;
+                    }
+
+                    if (res.getTotalAccuracy() > 0.99f && latch.getCount() == 1) {
+                        System.out.println("Early exit, found perfect result");
+                        latch.countDown();
+                        shouldStop.set(true);
+                    }
+                } catch (Throwable e) {
                     latch.countDown();
-                    break;
+                    System.out.println(e.getMessage());
+                    e.printStackTrace();
+                    System.exit(-1);
+                } finally {
+                    if (bucketMultiplier > 1)
+                        semaphore.release();
                 }
-
-                if (complete.incrementAndGet() == permutations.size()) {
-                    latch.countDown();
-                    System.out.println("Finished all permutations");
-                    break;
-                }
-
-                if (res.getTotalAccuracy() > 0.99f && latch.getCount() == 1) {
-                    System.out.println("Early exit, found perfect result");
-                    latch.countDown();
-                }
-            } catch (Throwable e) {
-                latch.countDown();
-                System.out.println(e.getMessage());
-                e.printStackTrace();
-                System.exit(-1);
-            }
+            });
         }
 
         try {
