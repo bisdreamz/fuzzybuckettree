@@ -65,7 +65,7 @@ public class FuzzyBucketTuner<T> {
      * @return The best single {@link TunerResult} from this feature order run
      */
     private CompletableFuture<TunerResult<T>> trainSet(List<FeatureBucketOptions> features, List<TrainingEntry<T>> trainingData,
-                                 List<TrainingEntry<T>> validationData, boolean skipPoorBucketConfigs) {
+                                 List<TrainingEntry<T>> validationData, boolean skipPoorBucketConfigs, boolean useSemaphores) {
         AtomicReference<TunerResult> bestBucketResult = new AtomicReference<>(null);
         AtomicInteger rounds = new AtomicInteger(0);
 
@@ -75,9 +75,13 @@ public class FuzzyBucketTuner<T> {
         while (bucketIterator.hasMoreBatches()) {
             List<Map<String, float[]>> batch = bucketIterator.getNextBatch();
 
-            semaphore.acquireUninterruptibly();
+            if (useSemaphores)
+                semaphore.acquireUninterruptibly();
 
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+            CompletableFuture<Void> future = new CompletableFuture<>();
+            futures.add(future);
+
+            executor.execute(() -> {
                 for (Map<String, float[]> bucketPermutationMap : batch) {
                     int bucketKey = bucketTracker.shouldTest(bucketPermutationMap);
                     if (skipPoorBucketConfigs && bucketKey == 0)
@@ -107,7 +111,7 @@ public class FuzzyBucketTuner<T> {
                     if (bucketKey > 0)
                         bucketTracker.recordPerformance(bucketKey, result.getTotalAccuracy());
 
-                    synchronized(bestBucketResult) {
+                    synchronized (bestBucketResult) {
                         if (bestBucketResult.get() == null ||
                                 bestBucketResult.get().getTotalAccuracy() < result.getTotalAccuracy()) {
                             bestBucketResult.set(result);
@@ -115,10 +119,10 @@ public class FuzzyBucketTuner<T> {
                     }
                 }
 
-                semaphore.release();
-            }, executor);
-
-            futures.add(future);
+                if (useSemaphores)
+                    semaphore.release();
+                future.complete(null);
+            });
         }
 
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).thenApply(v -> bestBucketResult.get());
@@ -300,15 +304,17 @@ public class FuzzyBucketTuner<T> {
 
         ScheduledFuture statusFut = startMonitor(complete, permutations.size());
 
+        boolean mainLoopSemaphore = bucketMultiplier == 1;
         CountDownLatch latch = new CountDownLatch(1);
         AtomicBoolean shouldStop = new AtomicBoolean(false);
         for (List<String> featureOrderSet : permutations) {
             if (shouldStop.get())
                 break;
 
-            if (bucketMultiplier > 1)
+            if (mainLoopSemaphore)
                 semaphore.acquireUninterruptibly();
 
+            CompletableFuture<Void> fut = new CompletableFuture<>();
             executor.execute(() -> {
                 try {
                     List<FeatureBucketOptions> featureBucketPermutation = featureOrderSet.stream().map(
@@ -323,7 +329,8 @@ public class FuzzyBucketTuner<T> {
                     TunerResult<T> res = trainSet(featureBucketPermutation,
                             trainingSample,
                             validationSample,
-                            skipLowBucketPerformers).get();
+                            skipLowBucketPerformers,
+                            !mainLoopSemaphore).get();
 
                     if (res == null)
                         throw new RuntimeException("Bucket permutation trainSet call returned null TunerResult. Panic!");
@@ -349,7 +356,7 @@ public class FuzzyBucketTuner<T> {
                         return;
                     }
 
-                    if (res.getTotalAccuracy() > 0.99f && latch.getCount() == 1) {
+                    if (res.getTotalAccuracy() == 1f && latch.getCount() == 1) {
                         System.out.println("Early exit, found perfect result");
                         latch.countDown();
                         shouldStop.set(true);
@@ -360,10 +367,18 @@ public class FuzzyBucketTuner<T> {
                     e.printStackTrace();
                     System.exit(-1);
                 } finally {
-                    if (bucketMultiplier > 1)
-                        semaphore.release();
+                    fut.complete(null);
                 }
             });
+
+            try {
+                fut.get();
+            } catch (Throwable e) {
+                throw new RuntimeException(e);
+            }
+
+            if (mainLoopSemaphore)
+                semaphore.release();
         }
 
         try {

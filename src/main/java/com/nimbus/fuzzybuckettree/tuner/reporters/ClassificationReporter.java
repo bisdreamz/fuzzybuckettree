@@ -41,7 +41,16 @@ public class ClassificationReporter<T> implements AccuracyReporter<T> {
 
     @Override
     public float getTotalAccuracy() {
-        return (float) labelReports.values().stream().mapToDouble(r -> r.calcWeightedAccuracy()).average().orElse(0f);
+        double totalWeightedSum = 0;
+        double totalSamples = 0;
+
+        for (PredictionReport r : labelReports.values()) {
+            double samples = r.getSamples();
+            totalWeightedSum += r.calcWeightedAccuracy() * samples;
+            totalSamples += samples;
+        }
+
+        return (float) (totalWeightedSum / totalSamples);
     }
 
     @Override
