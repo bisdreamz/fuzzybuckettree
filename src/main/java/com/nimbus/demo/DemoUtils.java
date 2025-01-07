@@ -25,7 +25,7 @@ public class DemoUtils {
             String line;
 
             while ((line = reader.readLine()) != null) {
-                Map<String, float[]> features = new HashMap<>();
+                Map<String, String[]> features = new HashMap<>();
 
                 String[] values = line.trim().split(",");
 
@@ -34,13 +34,6 @@ public class DemoUtils {
                     if (++idx == values.length) {
                         data.add(new TrainingEntry<>(features, val.trim()));
                         break;
-                    }
-
-                    float floatVal;
-                    try {
-                        floatVal = Float.parseFloat(val);
-                    } catch (NumberFormatException e) {
-                        floatVal = (float) val.hashCode();
                     }
 
                     String label = switch (idx-1) {
@@ -53,7 +46,7 @@ public class DemoUtils {
                         default -> throw new RuntimeException("Encountered unknown car data sample index");
                     };
 
-                    features.put(label, new float[]{ floatVal });
+                    features.put(label, new String[]{ val });
                 }
             }
 

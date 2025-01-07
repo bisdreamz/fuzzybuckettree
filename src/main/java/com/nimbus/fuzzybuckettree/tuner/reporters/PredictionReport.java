@@ -12,7 +12,7 @@ public class PredictionReport {
      * @param weight Weight of particular label being represented. Default is 1.
      * @param correct True if this prediction was correct or not
      */
-    void increment(float weight, boolean correct) {
+    synchronized void increment(float weight, boolean correct) {
         if (weight <= 0.01 || weight > 100)
             throw new IllegalArgumentException("Weight must be between 0.01 and 100");
 

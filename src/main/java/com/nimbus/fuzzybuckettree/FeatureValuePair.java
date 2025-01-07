@@ -1,4 +1,6 @@
 package com.nimbus.fuzzybuckettree;
 
-public record FeatureValuePair(String label, float[] values) {
+
+public record FeatureValuePair<V>(String label, V[] values) {
+
 }

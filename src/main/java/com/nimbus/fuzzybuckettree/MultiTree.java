@@ -44,7 +44,7 @@ public class MultiTree<T> {
         this.domains.put(domain, tree);
     }
 
-    public NodePrediction predict(String domain, Map<String, float[]> featureValueMap) {
+    public NodePrediction predict(String domain, Map<String, Object[]> featureValueMap) {
         if (domain == null)
             throw new NullPointerException("domain is null");
         if (featureValueMap == null || featureValueMap.isEmpty())
@@ -63,7 +63,7 @@ public class MultiTree<T> {
      * @param featureValueMap The feature -> value(s) map
      * @param outcome Associated target prediction answer
      */
-    public void train(String domain, Map<String, float[]> featureValueMap, T outcome) {
+    public void train(String domain, Map<String, Object[]> featureValueMap, T outcome) {
         if (domain == null)
             throw new NullPointerException("domain is null");
 

@@ -1,6 +1,7 @@
 package com.nimbus.demo;
 
 import com.nimbus.fuzzybuckettree.FeatureConfig;
+import com.nimbus.fuzzybuckettree.FeatureValueType;
 import com.nimbus.fuzzybuckettree.FuzzyBucketTree;
 import com.nimbus.fuzzybuckettree.prediction.handlers.ClassificationPredictionHandler;
 import com.nimbus.fuzzybuckettree.prediction.NodePrediction;
@@ -20,43 +21,45 @@ public class SimpleExample {
         System.out.println("Hello world!");
 
         List<FeatureConfig> features = List.of(
-            new FeatureConfig("size", 1, null),
-            new FeatureConfig("color", 1, null),
-            new FeatureConfig("legs", 1, null)
+            new FeatureConfig("size",  FeatureValueType.STRING,1, null),
+            new FeatureConfig("color", FeatureValueType.STRING, 1, null),
+            new FeatureConfig("legs",  FeatureValueType.INTEGER,1, null)
         );
 
         FuzzyBucketTree<String> tree = new FuzzyBucketTree<>(features, new ClassificationPredictionHandler<>());
 
-        tree.train(Map.of("size", new float[]{"small".hashCode()}, "color",
-                        new float[]{"brown".hashCode()}, "legs",
-                        new float[]{4}),
+        tree.train(Map.of("size", new String[]{"small"}, "color",
+                        new String[]{"brown"}, "legs",
+                        new Integer[]{4}),
                 "dog");
-        tree.train(Map.of("size", new float[]{"medium".hashCode()}, "color",
-                        new float[]{"gray".hashCode()}, "legs",
-                        new float[]{4}),
+        tree.train(Map.of("size", new String[]{"medium"}, "color",
+                        new Integer[]{"gray".hashCode()}, "legs",
+                        new Integer[]{4}),
                 "cat");
-        tree.train(Map.of("size", new float[]{"large".hashCode()}, "color",
-                        new float[]{"black".hashCode()}, "legs",
-                        new float[]{4}),
+        tree.train(Map.of("size", new String[]{"large"}, "color",
+                        new String[]{"black"}, "legs",
+                        new Integer[]{4}),
                 "horse");
-        tree.train(Map.of("size", new float[]{"small".hashCode()}, "color",
-                        new float[]{"white".hashCode()}, "legs",
-                        new float[]{2}),
+        tree.train(Map.of("size", new String[]{"small"}, "color",
+                        new String[]{"white"}, "legs",
+                        new Integer[]{2}),
                 "bird");
-        tree.train(Map.of("size", new float[]{"large".hashCode()}, "color",
-                        new float[]{"gray".hashCode()}, "legs",
-                        new float[]{4}),
+        tree.train(Map.of("size", new String[]{"large"}, "color",
+                        new String[]{"gray"}, "legs",
+                        new Integer[]{4}),
                 "elephant");
 
         System.out.println("Trained");
 
-        NodePrediction<String> p = tree.predict(Map.of("size", new float[]{"large".hashCode()}, "color",
-                new float[]{"black".hashCode()}, "legs", new float[]{4}));
+        NodePrediction<String> p = tree.predict(Map.of("size", new String[]{"large"}, "color",
+                new String[]{"black"}, "legs", new Integer[]{4}));
 
         if (p == null)
             System.out.println("No prediction");
         else
             System.out.println("Predicted label " + p.getPrediction() + " with confidence " + p.getConfidence() + " at depth " + p.getDepth());
+
+        tree.saveModel("animals.fbt");
     }
 
 }

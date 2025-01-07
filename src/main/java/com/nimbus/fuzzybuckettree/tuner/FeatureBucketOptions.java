@@ -1,5 +1,7 @@
 package com.nimbus.fuzzybuckettree.tuner;
 
+import com.nimbus.fuzzybuckettree.FeatureValueType;
+
 /**
  * Represents a feature to be trained on and the optional auto tuning bucket sizes to compute optimization with.
  * @param label The name of this feature used for reference, and to ensure safety in ordering of training and prediction data.
@@ -8,7 +10,7 @@ package com.nimbus.fuzzybuckettree.tuner;
  *                      evaluate which grouping band offering the best accuracy. This allows the decision tree to
  *                      approximate and group similar values. If null or zero length, then exact matching will be applied.
  */
-public record FeatureBucketOptions(String label, int valuesCount, float[] bucketOptions, int maxCombinations) {
+public record FeatureBucketOptions(String label, FeatureValueType type, int valuesCount, float[] bucketOptions, int maxCombinations) {
 
     /**
      * The max number of combinatorial segments this feature can have. That is, the bucketsCount^valuesCount.
@@ -19,16 +21,6 @@ public record FeatureBucketOptions(String label, int valuesCount, float[] bucket
      * over fitting.
      */
     public static final int MAX_SEGMENTS = 8192;
-
-    /**
-     * Construct a feature bucket options config with a default maxCombinations of 256
-     * @param label
-     * @param valuesCount
-     * @param bucketOptions
-     */
-    public FeatureBucketOptions(String label, int valuesCount, float[] bucketOptions) {
-        this(label, valuesCount, bucketOptions, 256);
-    }
 
     /**
      * Construct a config used in specifying training details about a particular feature.
@@ -53,18 +45,31 @@ public record FeatureBucketOptions(String label, int valuesCount, float[] bucket
      *                    count allow the tuner to test bucket options for smaller value segments, or individually, which
      *                    can potentially produce a better result at the cost of significant additional training time.
      */
-    public FeatureBucketOptions(String label, int valuesCount, float[] bucketOptions, int maxCombinations) {
+    public FeatureBucketOptions(String label, FeatureValueType type, int valuesCount, float[] bucketOptions, int maxCombinations) {
         this.label = label;
+        this.type = type;
         this.valuesCount = valuesCount;
         this.bucketOptions = bucketOptions;
         this.maxCombinations = maxCombinations;
 
         if (label == null || label.isEmpty())
             throw new IllegalArgumentException("label cannot be null");
+        if (type == null)
+            throw new IllegalArgumentException("type cannot be null");
         if (valuesCount <= 0)
             throw new IllegalArgumentException("Feature valuesCount must be greater than 0");
-        if (maxCombinations <= 0 || maxCombinations > MAX_SEGMENTS)
+        if (maxCombinations < 0 || maxCombinations > MAX_SEGMENTS)
             throw new IllegalArgumentException("maxCombinations must be greater than 0 and less than MAX_SEGMENTS " + MAX_SEGMENTS);
+    }
+
+    /**
+     * Construct a feature bucket option with no bucketing enabled, thus an exact match categorical feature
+     * @param label
+     * @param type
+     * @param valuesCount
+     */
+    public FeatureBucketOptions(String label, FeatureValueType type, int valuesCount) {
+        this(label, type, valuesCount, null, 0);
     }
 
 }

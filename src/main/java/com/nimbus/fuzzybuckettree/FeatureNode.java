@@ -8,14 +8,21 @@ import com.nimbus.fuzzybuckettree.prediction.NodePrediction;
 import com.nimbus.fuzzybuckettree.prediction.Prediction;
 import com.nimbus.fuzzybuckettree.prediction.handlers.PredictionHandler;
 
+import java.lang.reflect.Array;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
-class FeatureNode<T> {
+/**
+ * Represents a single feature value node in the tree
+ * @param <V> Type of value this feature represents. String, float, etc
+ * @param <T> Type of prediction value this node returns
+ */
+class FeatureNode<V, T> {
 
-    static final FeatureConfig FINAL_LEAF = new FeatureConfig("leaf", 0, null);
+    static final FeatureConfig FINAL_LEAF = new FeatureConfig("leaf", FeatureValueType.FLOAT, 0, null);
 
     @JsonProperty
     private final boolean isRoot;
@@ -33,7 +40,7 @@ class FeatureNode<T> {
      * their related child nodes, if any
      */
     @JsonProperty
-    private final Map<Long, FeatureNode<T>> children;
+    private final Map<String, FeatureNode<V, T>> children;
     /**
      * Prediction handler to retrieve the prediction value at this current depth in the tree,
      * without going down any child nodes. Allows us to optionally make "summarizing" predictions
@@ -49,15 +56,15 @@ class FeatureNode<T> {
     }
 
     @JsonCreator
-    public static <T> FeatureNode<T> deserialize(
+    public static <V, T> FeatureNode<V, T> deserialize(
             @JsonProperty("feature") FeatureConfig feature,
             @JsonProperty("allFeatures") List<FeatureConfig> allFeatures,
             @JsonProperty("featureCache") Map<String, FeatureConfig> featureCache,
-            @JsonProperty("children") Map<Long, FeatureNode<T>> children,
+            @JsonProperty("children") Map<String, FeatureNode<V, T>> children,
             @JsonProperty("predictionHandler") PredictionHandler<T> predictionHandler,
             @JsonProperty("isRoot") boolean isRoot) {
 
-        FeatureNode<T> node = new FeatureNode<>(feature, allFeatures, featureCache, predictionHandler, isRoot);
+        FeatureNode<V, T> node = new FeatureNode<>(feature, allFeatures, featureCache, predictionHandler, isRoot);
 
         // If this is not the root node, allFeatures will be null
         // The root node will have populated allFeatures from deserialization
@@ -73,10 +80,10 @@ class FeatureNode<T> {
     }
 
     // Helper method to assist avoiding re-serializing global feature configs
-    private static <T> void propagateFeatures(FeatureNode<T> node, List<FeatureConfig> features, Map<String, FeatureConfig> featureCache) {
+    private static <V, T> void propagateFeatures(FeatureNode<V, T> node, List<FeatureConfig> features, Map<String, FeatureConfig> featureCache) {
         node.allFeatures = features;
         node.featureCache = featureCache;
-        for (FeatureNode<T> child : node.children.values()) {
+        for (FeatureNode<V, T> child : node.children.values()) {
             propagateFeatures(child, features, featureCache);
         }
     }
@@ -100,6 +107,10 @@ class FeatureNode<T> {
         this.featureCache = featureCache;
     }
 
+    private String hash(Object[] values) {
+        return Arrays.stream(values).map(v -> v.toString()).collect(Collectors.joining(":"));
+    }
+
     private void validateFvp(FeatureValuePair fvp) {
         if (fvp.values() == null)
             throw new IllegalArgumentException("Value map for prediction missing value(s) for feature " + feature.label());
@@ -107,6 +118,11 @@ class FeatureNode<T> {
             throw new IllegalArgumentException("Prediction order for feature " + feature.label() + " doesnt match label " + fvp.label());
         if (fvp.values().length != feature.valueCount())
             throw new IllegalArgumentException("Prediction values for feature " + feature.label() + " must have length " + feature.valueCount() + " but had " + fvp.values().length);
+        if (!this.feature.type().getArrayClass().isInstance(fvp.values())) {
+            throw new IllegalArgumentException("Training values of type " +
+                    fvp.values().getClass() + " must be of configured type " +
+                    feature.type().getArrayClass().getName());
+        }
     }
 
     private FeatureConfig getNextFeatureConfig(FeatureValuePair[] stack, int depth) {
@@ -132,7 +148,7 @@ class FeatureNode<T> {
             return;
         }
 
-        FeatureValuePair fvp = featureStack[depth];
+        FeatureValuePair<V> fvp = featureStack[depth];
         try {
             this.validateFvp(fvp);
         } catch (Throwable e) {
@@ -141,8 +157,8 @@ class FeatureNode<T> {
             throw e;
         }
 
-        float[] rounded = bucketValues(fvp.values());
-        long hash = hash(rounded);
+        V[] rounded = bucketValues((V[]) fvp.values());
+        String hash = hash(rounded);
 
         this.predictionHandler.record(outcome);
 
@@ -178,36 +194,40 @@ class FeatureNode<T> {
      * @param vals Feature value(s) to apply bucketing to if enabled
      * @return The bucketed feature values
      */
-    private float[] bucketValues(float[] vals) {
-        if (vals == null || vals.length != feature.valueCount())
-            throw new IllegalArgumentException("Prediction values for feature " + feature.label()
-                    + " must have " + feature.valueCount() + " length");
+    private <V> V[] bucketValues(V[] vals) {
+        if (vals == null || vals.length != feature.valueCount()) {
+            throw new IllegalArgumentException("Values for feature " + feature.label()
+                    + " must have length " + feature.valueCount());
+        }
 
-        // no bucketing for this feature
-        if (feature.buckets() == null || feature.buckets().length == 0)
+        if (!feature.type().supportsBucketing() || feature.buckets() == null || feature.buckets().length == 0) {
             return vals;
+        }
 
-        float[] rounded = new float[feature.valueCount()];
+        @SuppressWarnings("unchecked")
+        V[] rounded = (V[]) Array.newInstance(vals.getClass().getComponentType(), feature.valueCount());
+
         for (int i = 0; i < rounded.length; i++) {
-            float rawVal = vals[i];
+            V rawVal = vals[i];
             float bucket = feature.buckets()[i];
 
-            if (bucket == 0f) // no founding allowed, exact match only
+            if (bucket == 0f) {
                 rounded[i] = rawVal;
-            else if (bucket < 0f)
+            } else if (bucket < 0f) {
                 throw new IllegalArgumentException("Bucket cannot be negative " + feature.label());
-            else
-                rounded[i] = Math.round(rawVal / bucket) * bucket;
+            } else if (rawVal instanceof Float f) {
+                rounded[i] = (V) Float.valueOf(Math.round(f / bucket) * bucket);
+            } else if (rawVal instanceof Double d) {
+                rounded[i] = (V) Double.valueOf(Math.round(d / bucket) * bucket);
+            } else {
+                rounded[i] = rawVal;  // Non-numeric types pass through unchanged
+            }
         }
 
         return rounded;
     }
 
-    private long hash (float[] vals) {
-        return Arrays.hashCode(vals);
-    }
-
-    public NodePrediction<T> predict(FeatureValuePair[] features) {
+    public NodePrediction<T> predict(FeatureValuePair<?>[] features) {
         return predict(features, 0);
     }
 
@@ -221,8 +241,8 @@ class FeatureNode<T> {
         FeatureValuePair fvp = features[depth];
         this.validateFvp(fvp);
 
-        float[] rounded = bucketValues(fvp.values());
-        long hash = hash(rounded);
+        V[] rounded = bucketValues((V[])fvp.values());
+        String hash = hash(rounded);
 
         depth++;
 
@@ -238,7 +258,7 @@ class FeatureNode<T> {
         return p != null ? new NodePrediction<>(p, depth) : null;
     }
 
-    public void nodeTrace(FeatureValuePair[] features, List<FeatureNode<T>> stack) {
+    public void nodeTrace(FeatureValuePair[] features, List<FeatureNode<?, T>> stack) {
         if (this.predict(features) != null)
             stack.add(this);
     }
@@ -255,7 +275,7 @@ class FeatureNode<T> {
      *
      * @param other The node to merge into this one
      */
-    public void merge(FeatureNode<T> other) {
+    public void merge(FeatureNode<?, T> other) {
         if (other == null)
             throw new NullPointerException("Cannot merge a null FeatureNode");
         if (!this.feature.equals(other.feature)) {
@@ -265,11 +285,11 @@ class FeatureNode<T> {
 
         this.predictionHandler.merge(other.predictionHandler);
 
-        for (Map.Entry<Long, FeatureNode<T>> entry : other.children.entrySet()) {
-            Long hash = entry.getKey();
-            FeatureNode<T> otherChild = entry.getValue();
+        for (Map.Entry<String, ? extends FeatureNode<?, T>> entry : other.children.entrySet()) {
+            String hash = entry.getKey();
+            FeatureNode<?, T> otherChild = entry.getValue();
 
-            FeatureNode<T> thisChild = this.children.computeIfAbsent(hash,
+            FeatureNode<V, T> thisChild = this.children.computeIfAbsent(hash,
                     k -> new FeatureNode<>(otherChild.feature, allFeatures, featureCache,
                             predictionHandler.newHandlerInstance(), otherChild.isRoot));
 
