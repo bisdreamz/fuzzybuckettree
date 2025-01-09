@@ -33,7 +33,7 @@ public class SimpleExample {
                         new Integer[]{4}),
                 "dog");
         tree.train(Map.of("size", new String[]{"medium"}, "color",
-                        new Integer[]{"gray".hashCode()}, "legs",
+                        new String[]{"gray"}, "legs",
                         new Integer[]{4}),
                 "cat");
         tree.train(Map.of("size", new String[]{"large"}, "color",

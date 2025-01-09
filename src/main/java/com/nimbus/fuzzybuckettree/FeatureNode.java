@@ -213,15 +213,15 @@ class FeatureNode<V, T> {
 
             if (bucket == 0f) {
                 rounded[i] = rawVal;
-            } else if (bucket < 0f) {
-                throw new IllegalArgumentException("Bucket cannot be negative " + feature.label());
-            } else if (rawVal instanceof Float f) {
-                rounded[i] = (V) Float.valueOf(Math.round(f / bucket) * bucket);
-            } else if (rawVal instanceof Double d) {
-                rounded[i] = (V) Double.valueOf(Math.round(d / bucket) * bucket);
-            } else {
-                rounded[i] = rawVal;  // Non-numeric types pass through unchanged
+                continue;
             }
+
+            rounded[i] = switch (this.feature.type()) {
+                case FLOAT -> (V) Float.valueOf(Math.round((float) rawVal / bucket) * bucket);
+                case DOUBLE -> (V) Double.valueOf(Math.round((double) rawVal / bucket) * bucket);
+                case INTEGER -> (V) Integer.valueOf((int)(Math.round((int) rawVal / bucket) * bucket));
+                default -> rawVal;
+            };
         }
 
         return rounded;
@@ -244,11 +244,9 @@ class FeatureNode<V, T> {
         V[] rounded = bucketValues((V[])fvp.values());
         String hash = hash(rounded);
 
-        depth++;
-
         FeatureNode child = this.children.get(hash);
         if (child != null) {
-            NodePrediction<T> p = child.predict(features, depth);
+            NodePrediction<T> p = child.predict(features, depth + 1);
 
             if (p != null)
                 return p;

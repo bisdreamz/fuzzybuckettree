@@ -64,6 +64,13 @@ public class FuzzyBucketTree<T> {
         this.root = new FeatureNode<>(features.getFirst(), features, featureCache, predictionHandler.newHandlerInstance(), true);
     }
 
+    /**
+     * @return The {@link FeatureConfig} configuration for this model, in their respective decisioning order.
+     */
+    public List<FeatureConfig> getFeatures() {
+        return features;
+    }
+
     private FeatureValuePair[] getFeatureValuePairs(Map<String, ? extends Object[]> featureValueMap) {
         if (featureValueMap.size() > features.size())
             throw new IllegalArgumentException("Number of prediction features cannot be larger than the number of configured features");
@@ -72,7 +79,9 @@ public class FuzzyBucketTree<T> {
 
         for (int i = 0; i < featureValuePairs.length; i++) {
             FeatureConfig feature = features.get(i);
-            featureValuePairs[i] = new FeatureValuePair(feature.label(), featureValueMap.get(feature.label()));
+            featureValuePairs[i] = new FeatureValuePair(feature.label(),
+                    featureValueMap.get(feature.label()),
+                            feature.type());
         }
 
         return featureValuePairs;

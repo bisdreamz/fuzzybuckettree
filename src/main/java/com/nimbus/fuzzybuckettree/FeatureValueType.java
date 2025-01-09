@@ -3,9 +3,10 @@ package com.nimbus.fuzzybuckettree;
 public enum FeatureValueType {
 
     FLOAT(Float[].class, true),
+    INTEGER(Integer[].class, true),
+    DOUBLE(Double[].class, true),
     STRING(String[].class, false),
-    INTEGER(Integer[].class, false),
-    DOUBLE(Double[].class, true);
+    BOOLEAN(Boolean[].class, false);
 
     private final Class<?> arrayClass;
     private final boolean supportsBucketing;
