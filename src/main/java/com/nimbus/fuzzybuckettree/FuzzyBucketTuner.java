@@ -90,7 +90,7 @@ public class FuzzyBucketTuner<T> {
                     rounds.incrementAndGet();
 
                     List<FeatureConfig> featureConfigs = features.stream()
-                            .map(f -> new FeatureConfig(f.label(), f.valuesCount(), bucketPermutationMap.get(f.label())))
+                            .map(f -> new FeatureConfig(f.label(), f.type(), f.valuesCount(), bucketPermutationMap.get(f.label())))
                             .toList();
 
                     FuzzyBucketTree<T> tree = new FuzzyBucketTree<>(featureConfigs, predictionHandler.newHandlerInstance());
@@ -146,7 +146,7 @@ public class FuzzyBucketTuner<T> {
             long estimatedSecsRemaining = jobsPerSecond > 0 ?
                     (long)(remainingJobs / jobsPerSecond) : 0;
 
-            System.out.printf("Jobs complete: %d of %d (%.1f%%) | " +
+            System.out.printf("TUNE Jobs complete: %d of %d (%.1f%%) | " +
                             "Elapsed: %02d:%02d:%02d | " +
                             "Estimated remaining: %02d:%02d:%02d | " +
                             "Rate: %.1f jobs/sec | " +

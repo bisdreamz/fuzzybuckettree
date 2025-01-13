@@ -31,13 +31,13 @@ public class FuzzyBucketTree<T> {
     }
 
     @JsonProperty("root")
-    private final FeatureNode<T> root;
+    private final FeatureNode<?, T> root;
     @JsonProperty("features")
     private final List<FeatureConfig> features;
 
     @JsonCreator
     public FuzzyBucketTree(
-            @JsonProperty("root") FeatureNode<T> root,
+            @JsonProperty("root") FeatureNode<?, T> root,
             @JsonProperty("features") List<FeatureConfig> features) {
         this.root = root;
         this.features = features;
@@ -64,7 +64,14 @@ public class FuzzyBucketTree<T> {
         this.root = new FeatureNode<>(features.getFirst(), features, featureCache, predictionHandler.newHandlerInstance(), true);
     }
 
-    private FeatureValuePair[] getFeatureValuePairs(Map<String, float[]> featureValueMap) {
+    /**
+     * @return The {@link FeatureConfig} configuration for this model, in their respective decisioning order.
+     */
+    public List<FeatureConfig> getFeatures() {
+        return features;
+    }
+
+    private FeatureValuePair[] getFeatureValuePairs(Map<String, ? extends Object[]> featureValueMap) {
         if (featureValueMap.size() > features.size())
             throw new IllegalArgumentException("Number of prediction features cannot be larger than the number of configured features");
 
@@ -72,7 +79,9 @@ public class FuzzyBucketTree<T> {
 
         for (int i = 0; i < featureValuePairs.length; i++) {
             FeatureConfig feature = features.get(i);
-            featureValuePairs[i] = new FeatureValuePair(feature.label(), featureValueMap.get(feature.label()));
+            featureValuePairs[i] = new FeatureValuePair(feature.label(),
+                    featureValueMap.get(feature.label()),
+                            feature.type());
         }
 
         return featureValuePairs;
@@ -85,7 +94,7 @@ public class FuzzyBucketTree<T> {
      * @return The prediction result type associated with the registered prediction handler, or a prediction
      * with a null value and 0 confidence if no prediction was able to be made.
      */
-    public NodePrediction<T> predict(Map<String, float[]> featureValueMap) {
+    public NodePrediction<T> predict(Map<String, ? extends Object[]> featureValueMap) {
         if (featureValueMap == null)
             throw new IllegalArgumentException("Features cannot be null");
         if (featureValueMap.size() != features.size())
@@ -101,14 +110,14 @@ public class FuzzyBucketTree<T> {
      * @param featureValueMap The feature -> value(s) map
      * @param outcome Associated target prediction answer
      */
-    public void train(Map<String, float[]> featureValueMap, T outcome) {
+    public void train(Map<String, ? extends Object[]> featureValueMap, T outcome) {
         if (outcome == null)
             throw new IllegalArgumentException("Prediction outcome cannot be null");
 
         root.update(getFeatureValuePairs(featureValueMap), outcome);
     }
 
-    public List<FeatureNode<T>> nodeTrace(Map<String, float[]> featureValueMap) {
+    public List<FeatureNode<?, T>> nodeTrace(Map<String, float[]> featureValueMap) {
         throw new UnsupportedOperationException("getNodeTrace not impl yet");
     }
 

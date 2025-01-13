@@ -2,6 +2,7 @@ package com.nimbus.demo;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nimbus.fuzzybuckettree.FeatureValueType;
 import com.nimbus.fuzzybuckettree.FuzzyBucketTuner;
 import com.nimbus.fuzzybuckettree.prediction.NodePrediction;
 import com.nimbus.fuzzybuckettree.prediction.handlers.ClassificationPredictionHandler;
@@ -24,12 +25,12 @@ public class CarsCsvTrainToFile {
         List<TrainingEntry<String>> csvData = DemoUtils.loadCarData();
 
         List<FeatureBucketOptions> featureBucketOptions = List.of(
-                new FeatureBucketOptions("price", 1,null),
-                new FeatureBucketOptions("maint", 1,null),
-                new FeatureBucketOptions("doors",1, null),
-                new FeatureBucketOptions("persons", 1,null),
-                new FeatureBucketOptions("lugboot",1, null),
-                new FeatureBucketOptions("safety",1, null)
+                new FeatureBucketOptions("price", FeatureValueType.STRING, 1),
+                new FeatureBucketOptions("maint", FeatureValueType.STRING, 1),
+                new FeatureBucketOptions("doors", FeatureValueType.STRING,1),
+                new FeatureBucketOptions("persons", FeatureValueType.STRING, 1),
+                new FeatureBucketOptions("lugboot", FeatureValueType.STRING, 1),
+                new FeatureBucketOptions("safety", FeatureValueType.STRING, 1)
         );
 
         FuzzyBucketTuner<String> tuner = new FuzzyBucketTuner<>(featureBucketOptions,

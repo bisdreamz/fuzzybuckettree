@@ -15,15 +15,22 @@ import java.util.Arrays;
  *                bucket width applied. If null or zero length, then no feature value aggregation
  *                is applied and feature values will be treated as exact match.
  */
-public record FeatureConfig (String label, int valueCount, float[] buckets) {
+public record FeatureConfig (String label, FeatureValueType type, int valueCount, float[] buckets) {
 
-    public FeatureConfig (String label, int valueCount, float[] buckets) {
+    public FeatureConfig (String label, FeatureValueType type, int valueCount, float[] buckets) {
         this.label = label;
+        this.type = type;
         this.valueCount = valueCount;
         this.buckets = buckets;
 
         if (label == null || label.isEmpty())
             throw new IllegalArgumentException("Feature label cannot be null or empty");
+
+        if (type == null)
+            throw new IllegalArgumentException("Feature type cannot be null");
+
+        if (!type.supportsBucketing() && buckets != null && buckets.length > 0)
+            throw new IllegalArgumentException("Buckets enabled for feature but feature type doesnt support bucketing");
 
         if (buckets != null && buckets.length > 0 && buckets.length != valueCount)
             throw new IllegalArgumentException("Feature buckets length must equal value count when bucketing enabled for feature");
