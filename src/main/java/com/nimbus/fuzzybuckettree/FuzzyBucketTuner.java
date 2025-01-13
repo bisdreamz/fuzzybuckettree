@@ -10,10 +10,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.*;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -34,7 +31,7 @@ public class FuzzyBucketTuner<T> {
 
     public FuzzyBucketTuner(List<FeatureBucketOptions> features, PredictionHandler<T> predictionHandler,
                             AccuracyReporter<T> accuracyReporter, int concurrency) {
-        this.executor = Executors.newFixedThreadPool(concurrency);
+        this.executor = Executors.newFixedThreadPool(concurrency + 1);
         this.scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
         this.features = features;
         this.predictionHandler = predictionHandler;
@@ -242,7 +239,7 @@ public class FuzzyBucketTuner<T> {
      * @return {@link TunerResult} with the best configration and accuracy results found.
      */
     public TunerResult<T> train(List<TrainingEntry<T>> trainingData, List<TrainingEntry<T>> validationData) {
-        return train(trainingData, validationData, 1f, 1f);
+        return trainAllPermutations(trainingData, validationData, 1f, 1f);
     }
 
     /**
@@ -250,9 +247,10 @@ public class FuzzyBucketTuner<T> {
      * possible permutation of provided feature order as well as bucket delta values for
      * each individual feature as configured. Features which return more than one value
      * will always have their order respected, and will not be shuffled e.g. time
-     * series data. This method will sample data during auto optimization to accelerage
+     * series data. This method will sample data during auto optimization to accelerate
      * bucket parameter exploration. Once the best config is found, a full training
-     * and validation will be ran for the final returned tree model.
+     * and validation will be ran for the final returned tree model. This is the
+     * slowest training method but has the most coverage of feature order evaluation.
      * @param trainingData Data to train on as a list of individual map entries,
      *             mapping each feature to their respective value(s).
      *             The map must contain a <i>target</i> key which contains
@@ -268,7 +266,7 @@ public class FuzzyBucketTuner<T> {
      *                             if no improvement is found in the last 500 permutations. 1f means no early stopping.
      * @return {@link TunerResult} with the best configration and accuracy results found.
      */
-    public TunerResult<T> train(List<TrainingEntry<T>> trainingData, List<TrainingEntry<T>> validationData,
+    public TunerResult<T> trainAllPermutations(List<TrainingEntry<T>> trainingData, List<TrainingEntry<T>> validationData,
                                 float sampleRate, float earlyStoppingPercent) {
         if (trainingData.isEmpty() || validationData.isEmpty())
             throw new IllegalArgumentException("Training and validation data must not be empty");
@@ -416,6 +414,451 @@ public class FuzzyBucketTuner<T> {
             executor.shutdownNow();
             scheduledExecutor.shutdownNow();
         }
+    }
+
+    private List<TrainingEntry<T>> reduceTrainingFields(List<TrainingEntry<T>> data, List<FeatureBucketOptions> testStack) {
+        return data.stream()
+                .map(entry -> {
+                    Set<String> allowedKeys = testStack.stream()
+                            .map(FeatureBucketOptions::label)
+                            .collect(Collectors.toSet());
+
+                    Map<String, Object[]> filteredFeatures = entry.features().entrySet().stream()
+                            .filter(e -> allowedKeys.contains(e.getKey()))
+                            .collect(Collectors.toMap(
+                                    Map.Entry::getKey,
+                                    e -> e.getValue()
+                            ));
+
+                    return new TrainingEntry<>(filteredFeatures, entry.outcome());
+                })
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Begin the training and auto-tuning process. This method seeks to reduce the
+     * search space by iteratively testing and ordering features from lowest to highest
+     * accuracy, in effect expecting broadest to most specific ordering.
+     * Features which return more than one value will always have their order respected,
+     * and will not be shuffled e.g. time series data. Once the best config is found, a full training
+     * and validation will be ran for the final returned tree model.
+     * @param trainingData Data to train on as a list of individual map entries,
+     *             mapping each feature to their respective value(s).
+     *             The map must contain a <i>target</i> key which contains
+     *             the target prediction value for the given feature set.
+     * @param validationData Data set used solely for accurady validation and not training.
+     *                       Must also include the <i>target</i> value.
+     * @implNote Temporary evaluation method - will assess bucket values but not in respect to
+     * very possible combination alongside categorical features.
+     * @return {@link TunerResult} with the best configration and accuracy results found.
+     */
+    public TunerResult<T> trainIterative(List<TrainingEntry<T>> trainingData, List<TrainingEntry<T>> validationData) {
+        if (trainingData.isEmpty() || validationData.isEmpty())
+            throw new IllegalArgumentException("Training and validation data must not be empty");
+
+        int bucketMultiplier = Math.max(1, features.stream()
+                .mapToInt(f -> f.bucketOptions() != null && f.bucketOptions().length > 0 ? f.bucketOptions().length - 1 : 0)
+                .sum());
+
+        int totalRounds = (features.size() * (features.size() + 1)) / 2;
+
+        if (totalRounds <= 0 || totalRounds == Integer.MAX_VALUE)
+            throw new IllegalArgumentException("Too few or too many feature combinations provided, calculation impractical!");
+
+        AtomicInteger complete = new AtomicInteger();
+
+        ScheduledFuture statusFut = startMonitor(complete, totalRounds);
+
+        boolean mainLoopSemaphore = bucketMultiplier == 1;
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicBoolean shouldStop = new AtomicBoolean(false);
+
+        List<FeatureStackScore> stackScores = new ArrayList<>();
+
+        List<FeatureBucketOptions> featureStack = new ArrayList<>(features.size());
+        List<FeatureBucketOptions> featuresRemaining = new ArrayList<>(features);
+        while (!featuresRemaining.isEmpty()) {
+            NavigableMap<Float, FeatureBucketOptions> featureTestScores = Collections.synchronizedNavigableMap(new TreeMap<>());
+
+            Map<FeatureBucketOptions, TunerResult<T>> featureTunerResult = new ConcurrentHashMap<>();
+            featuresRemaining.forEach(feature -> {
+                if (mainLoopSemaphore)
+                    semaphore.acquireUninterruptibly();
+                if (shouldStop.get())
+                    return;
+
+                List<FeatureBucketOptions> testStack = new ArrayList<>(featureStack);
+                testStack.add(feature);
+
+                List<TrainingEntry<T>> stackTrainingData = reduceTrainingFields(trainingData, testStack);
+                List<TrainingEntry<T>> stackValidationData = reduceTrainingFields(validationData, testStack);
+
+                CompletableFuture<Void> fut = new CompletableFuture<>();
+                executor.execute(() -> {
+                    try {
+                        // We begin testing all bucket configs up until sampleRate coverage of feature permutations,
+                        // then from there we only continue testing the top bucket option performers. This allows
+                        // us to begin with a wide search field of bucket options, but quickly narrow it down to
+                        // reduce wasted training time on bucket options that consistently perform poorly
+                        boolean skipLowBucketPerformers = false; // bucketMultiplier > NCPUS && (complete.get() / (float) totalRounds) > sampleRate;
+
+                        TunerResult<T> res = trainSet(testStack,
+                                stackTrainingData,
+                                stackValidationData,
+                                skipLowBucketPerformers,
+                                !mainLoopSemaphore).get();
+
+                        if (res == null)
+                            throw new RuntimeException("Bucket permutation trainSet call returned null TunerResult. Panic!");
+
+                        featureTestScores.put(res.getTotalAccuracy(), feature);
+                        featureTunerResult.put(feature, res);
+                    } catch (Throwable e) {
+                        latch.countDown();
+                        System.out.println(e.getMessage());
+                        e.printStackTrace();
+                        System.exit(-1);
+                    } finally {
+                        fut.complete(null);
+                    }
+                });
+
+                try {
+                    fut.get();
+                } catch (Throwable e) {
+                    throw new RuntimeException(e);
+                }
+
+                if (mainLoopSemaphore)
+                    semaphore.release();
+
+                complete.incrementAndGet();
+            });
+
+            Map.Entry<Float, FeatureBucketOptions> worstEntry = featureTestScores.pollFirstEntry();
+            Map.Entry<Float, FeatureBucketOptions> bestEntry = featureTestScores.pollLastEntry();
+            if (bestEntry == null) // same scores
+                bestEntry = worstEntry;
+
+            stackScores.add(new FeatureStackScore(worstEntry.getValue().label(), worstEntry.getKey()));
+            featureStack.add(worstEntry.getValue());
+            featuresRemaining.remove(worstEntry.getValue());
+
+            TunerResult<T> bestFeatureResult = featureTunerResult.get(bestEntry.getValue());
+
+            /*
+            if (bestResult != null && bestResult.getTotalAccuracy() > bestFeatureResult.getTotalAccuracy()) {
+                System.out.println("All remaining features made model worse or provided no improvement, early stopping");
+                shouldStop.set(true);
+                break;
+            } */
+
+            bestAccuracy.set(bestFeatureResult.getTotalAccuracy());
+            bestResult = bestFeatureResult;
+
+            System.out.println("Next identified feature " + worstEntry.getValue().label() + " score " + worstEntry.getKey());
+        }
+
+        try {
+            statusFut.cancel(true);
+
+            System.out.println("Initial auto-tuning complete! Best sampled training accuracy of " + bestResult.getTotalAccuracy()
+                    + " with a feature configuration of:");
+            bestResult.getFeatureConfigs().forEach(fc -> {
+                System.out.println(fc.label()  + "(" + fc.valueCount() + ") -> " + Arrays.toString(fc.buckets()));
+            });
+            System.out.println("Feature score progression: " + stackScores.stream().map(s
+                    -> s.feature() + " (" + s.score() + ")").collect(Collectors.joining(" -> ")));
+
+            System.out.println("Now begin full data training with discovered settings..");
+
+            FuzzyBucketTree<T> finalTree = new FuzzyBucketTree<>(bestResult.getFeatureConfigs(), predictionHandler.newHandlerInstance());
+
+            this.submitDataBatches(trainingData, entry -> finalTree.train(entry.features(), entry.outcome())).get();
+
+            System.out.println("Initial training done, begin validation work..");
+
+            AccuracyReporter<T> reporter = accuracyReporter.getNewInstance();
+            this.submitDataBatches(validationData, entry -> {
+                NodePrediction<T> nodePrediction = finalTree.predict(entry.features());
+                if (nodePrediction != null && nodePrediction.getConfidence() > 0f)
+                    reporter.record(nodePrediction.getPrediction(), entry.outcome());
+            }).get();
+
+            System.out.println("Training complete. Final weighted accuracy of "
+                    + new BigDecimal(reporter.getTotalAccuracy()).setScale(2, RoundingMode.HALF_EVEN));
+
+            return new TunerResult<>(bestResult.getFeatureConfigs(), reporter, finalTree);
+        } catch (Throwable e) {
+            throw new RuntimeException(e);
+        } finally {
+            executor.shutdownNow();
+            scheduledExecutor.shutdownNow();
+        }
+    }
+
+    /**
+     * Begin the training and auto-tuning process. This method seeks to reduce the
+     * search space by iteratively testing and ordering categorical features not by
+     * individual accuracy, but by highest to lowest average frequency. E.g.
+     * broad features that have low cardinality and high sample rates will end up
+     * shallower in the tree, and lower ones deeper. This is an alternative approach
+     * to finding the most optimal hierarchical node order.
+     * After identified, combinations of these categorical feature orders are tested
+     * separately with different orderings and configurations of the bucketed features to
+     * determine the best placement and bucketing of applicable features when combined with
+     * the exact match feature set.
+     * Features which return more than one value will always have their order respected,
+     * and will not be shuffled e.g. time series data. Once the best config is found, a full training
+     * and validation will be ran for the final returned tree model.
+     * @param trainingData Data to train on as a list of individual map entries,
+     *             mapping each feature to their respective value(s).
+     *             The map must contain a <i>target</i> key which contains
+     *             the target prediction value for the given feature set.
+     * @param validationData Data set used solely for accurady validation and not training.
+     *                       Must also include the <i>target</i> value.
+     * @implNote Temporary evaluation method - will assess bucket values but not in respect to
+     * very possible combination alongside categorical features.
+     * @return {@link TunerResult} with the best configration and accuracy results found.
+     */
+    public TunerResult<T> trainFrequency(List<TrainingEntry<T>> trainingData, List<TrainingEntry<T>> validationData) throws ExecutionException, InterruptedException {
+        if (trainingData.isEmpty() || validationData.isEmpty())
+            throw new IllegalArgumentException("Training and validation data must not be empty");
+
+        // Split features into exact match and bucketed
+        List<FeatureBucketOptions> exactMatchFeatures = features.stream()
+                .filter(f -> f.bucketOptions() == null || f.bucketOptions().length == 0)
+                .collect(Collectors.toList());
+
+        List<FeatureBucketOptions> bucketedFeatures = features.stream()
+                .filter(f -> f.bucketOptions() != null && f.bucketOptions().length > 0)
+                .collect(Collectors.toList());
+
+        // Calculate bucket multiplier for parallelization decision
+        int bucketMultiplier = Math.max(1, bucketedFeatures.stream()
+                .mapToInt(f -> f.bucketOptions().length - 1)
+                .sum());
+
+        // Calculate frequencies and sort exact match features
+        Map<FeatureBucketOptions, Double> frequencies = calculateExactMatchFrequencies(trainingData, exactMatchFeatures);
+        List<FeatureBucketOptions> orderedExactFeatures = exactMatchFeatures.stream()
+                .sorted((f1, f2) -> Double.compare(frequencies.get(f2), frequencies.get(f1)))
+                .collect(Collectors.toList());
+
+        // Generate positions for bucketed features
+        List<List<Integer>> bucketPositions = generateBucketPositions(
+                orderedExactFeatures.size(),
+                bucketedFeatures.size()
+        );
+
+        int totalCombinations = bucketPositions.size();
+        if (totalCombinations == 0 || totalCombinations == Integer.MAX_VALUE)
+            throw new IllegalArgumentException("Too few or too many feature combinations!");
+
+        AtomicInteger complete = new AtomicInteger();
+        ScheduledFuture statusFut = startMonitor(complete, totalCombinations);
+
+        boolean mainLoopSemaphore = bucketMultiplier == 1;
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicBoolean shouldStop = new AtomicBoolean(false);
+        AtomicReference<TunerResult<T>> bestResult = new AtomicReference<>();
+        AtomicReference<List<FeatureBucketOptions>> bestFeatureOrder = new AtomicReference<>();
+        AtomicReference<Float> bestAccuracy = new AtomicReference<>(0f);
+
+        for (List<Integer> positions : bucketPositions) {
+            if (shouldStop.get())
+                break;
+
+            if (mainLoopSemaphore)
+                semaphore.acquireUninterruptibly();
+
+            CompletableFuture<Void> fut = new CompletableFuture<>();
+            executor.execute(() -> {
+                try {
+                    // Create feature order for this combination
+                    List<FeatureBucketOptions> testFeatures = new ArrayList<>(orderedExactFeatures);
+                    for (int i = 0; i < bucketedFeatures.size(); i++) {
+                        testFeatures.add(positions.get(i), bucketedFeatures.get(i));
+                    }
+
+                    // Test this feature order
+                    TunerResult<T> result = trainSet(
+                            testFeatures,
+                            trainingData,
+                            validationData,
+                            false,
+                            !mainLoopSemaphore  // Let trainSet handle parallelization when we have multiple bucket options
+                    ).get();
+
+                    if (result == null)
+                        throw new RuntimeException("Bucket permutation trainSet call returned null TunerResult!");
+
+                    float resAccuracy = result.getTotalAccuracy();
+                    float currentBest = bestAccuracy.get();
+
+                    if (resAccuracy > currentBest) {
+                        bestAccuracy.set(resAccuracy);
+                        bestResult.set(result);
+                        bestFeatureOrder.set(new ArrayList<>(testFeatures));
+
+                        System.out.println("New best accuracy: " + resAccuracy + " with feature order: " +
+                                testFeatures.stream().map(FeatureBucketOptions::label)
+                                        .collect(Collectors.joining(" -> ")));
+                    }
+
+                    if (complete.incrementAndGet() == totalCombinations) {
+                        latch.countDown();
+                        System.out.println("Finished all combinations");
+                        shouldStop.set(true);
+                        return;
+                    }
+
+                    if (resAccuracy == 1f && latch.getCount() == 1) {
+                        System.out.println("Early exit, found perfect result");
+                        latch.countDown();
+                        shouldStop.set(true);
+                    }
+                } catch (Throwable e) {
+                    latch.countDown();
+                    System.out.println(e.getMessage());
+                    e.printStackTrace();
+                    System.exit(-1);
+                } finally {
+                    fut.complete(null);
+                }
+            });
+
+            try {
+                fut.get();
+            } catch (Throwable e) {
+                throw new RuntimeException(e);
+            }
+
+            if (mainLoopSemaphore)
+                semaphore.release();
+        }
+
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while waiting for completion", e);
+        }
+
+        statusFut.cancel(true);
+
+        return finalizeTuning(bestResult.get(), bestFeatureOrder.get(), trainingData, validationData);
+    }
+
+    private Map<FeatureBucketOptions, Double> calculateExactMatchFrequencies(
+            List<TrainingEntry<T>> trainingData,
+            List<FeatureBucketOptions> exactMatchFeatures) {
+
+        // Use a more memory-efficient approach with parallel processing
+        Map<FeatureBucketOptions, Map<Object, LongAdder>> valueCounts = new ConcurrentHashMap<>();
+        exactMatchFeatures.forEach(f -> valueCounts.put(f, new ConcurrentHashMap<>()));
+
+        // Process in batches to reduce memory pressure
+        int batchSize = 10000;
+        for (int i = 0; i < trainingData.size(); i += batchSize) {
+            int endIndex = Math.min(i + batchSize, trainingData.size());
+            List<TrainingEntry<T>> batch = trainingData.subList(i, endIndex);
+
+            batch.parallelStream().forEach(entry -> {
+                for (FeatureBucketOptions feature : exactMatchFeatures) {
+                    Object value = entry.features().get(feature.label());
+                    if (value != null) {
+                        valueCounts.get(feature)
+                                .computeIfAbsent(value, k -> new LongAdder())
+                                .increment();
+                    }
+                }
+            });
+        }
+
+        // Calculate frequencies
+        Map<FeatureBucketOptions, Double> frequencies = new HashMap<>();
+        for (FeatureBucketOptions feature : exactMatchFeatures) {
+            Map<Object, LongAdder> counts = valueCounts.get(feature);
+            long totalSamples = counts.values().stream()
+                    .mapToLong(LongAdder::sum)
+                    .sum();
+            double uniqueValues = counts.size();
+            frequencies.put(feature, (double) totalSamples / uniqueValues);
+        }
+
+        return frequencies;
+    }
+
+    private List<List<Integer>> generateBucketPositions(int fixedFeatureCount, int bucketedFeatureCount) {
+        List<List<Integer>> positions = new ArrayList<>();
+
+        // Generate all possible positions for bucketed features
+        int[] currentPositions = new int[bucketedFeatureCount];
+        for (int i = 0; i < bucketedFeatureCount; i++) {
+            currentPositions[i] = i;
+        }
+
+        do {
+            List<Integer> positionList = Arrays.stream(currentPositions)
+                    .boxed()
+                    .collect(Collectors.toList());
+            positions.add(positionList);
+        } while (generateNextPosition(currentPositions, fixedFeatureCount + bucketedFeatureCount - 1));
+
+        return positions;
+    }
+
+    private boolean generateNextPosition(int[] positions, int maxValue) {
+        int i = positions.length - 1;
+        while (i >= 0 && positions[i] == maxValue - (positions.length - 1 - i)) {
+            i--;
+        }
+
+        if (i < 0) {
+            return false;
+        }
+
+        positions[i]++;
+        for (int j = i + 1; j < positions.length; j++) {
+            positions[j] = positions[j - 1] + 1;
+        }
+        return true;
+    }
+
+    private TunerResult<T> finalizeTuning(
+            TunerResult<T> bestResult,
+            List<FeatureBucketOptions> bestFeatureOrder,
+            List<TrainingEntry<T>> trainingData,
+            List<TrainingEntry<T>> validationData) throws ExecutionException, InterruptedException {
+
+        System.out.println("Auto-tuning complete! Best accuracy: " + bestResult.getTotalAccuracy());
+        System.out.println("Final feature order:");
+        bestResult.getFeatureConfigs().forEach(f -> {
+            String bucketInfo = f.buckets() != null && f.buckets().length > 0 ?
+                    " (bucketed: " + Arrays.toString(f.buckets()) + ")" :
+                    " (exact match)";
+            System.out.println("- " + f.label() + bucketInfo);
+        });
+
+        // Train final model with best configuration
+        FuzzyBucketTree<T> finalTree = new FuzzyBucketTree<>(
+                bestResult.getFeatureConfigs(),
+                predictionHandler.newHandlerInstance()
+        );
+
+        this.submitDataBatches(trainingData,
+                entry -> finalTree.train(entry.features(), entry.outcome())).get();
+
+        AccuracyReporter<T> reporter = accuracyReporter.getNewInstance();
+        this.submitDataBatches(validationData, entry -> {
+            NodePrediction<T> prediction = finalTree.predict(entry.features());
+            if (prediction != null && prediction.getConfidence() > 0f) {
+                reporter.record(prediction.getPrediction(), entry.outcome());
+            }
+        }).get();
+
+        return new TunerResult<>(bestResult.getFeatureConfigs(), reporter, finalTree);
     }
 
 }

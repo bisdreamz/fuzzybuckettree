@@ -12,7 +12,8 @@ import java.lang.reflect.Array;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -34,6 +35,8 @@ class FeatureNode<V, T> {
     private transient Map<String, FeatureConfig> featureCache;
     @JsonIgnore
     private transient FeatureConfig nextFeature;
+
+    private ScheduledFuture cleaningTask;
 
     /**
      * Mapping of the hash value of the unique feature value combinations to
@@ -303,6 +306,40 @@ class FeatureNode<V, T> {
                 .stream()
                 .mapToInt(FeatureNode::leafCount)
                 .sum();
+    }
+
+    /**
+     * Evaluate and perform any pruning work, determined by the related
+     * {@link PredictionHandler} implementation
+     * @return Number of pruned leaf entries
+     */
+    public int prune() {
+        if (children.isEmpty()) {
+            // this is a leaf, clean ourselves up if needed
+            if (predictionHandler.shouldPrune()) {
+                predictionHandler.cleanup();
+                return 1;
+            }
+
+            return 0;
+        }
+
+        // Not a leaf, check for any child nodes needing pruning
+        AtomicInteger pruned = new AtomicInteger();
+        children.values().removeIf(child -> {
+            // remove node from tree if it ends up empty
+            pruned.addAndGet(child.prune());
+            return child.children.isEmpty();
+        });
+
+        // Whew we ended up empty, clean up our act and get out of here
+        if (children.isEmpty()) {
+            if (!predictionHandler.shouldPrune())
+                throw new RuntimeException("Error! All children pruned but shared predictonHandler survived!");
+            predictionHandler.cleanup();
+        }
+
+        return pruned.get();
     }
 
 }

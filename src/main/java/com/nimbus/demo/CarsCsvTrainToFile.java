@@ -1,7 +1,6 @@
 package com.nimbus.demo;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.nimbus.fuzzybuckettree.FeatureValueType;
 import com.nimbus.fuzzybuckettree.FuzzyBucketTuner;
 import com.nimbus.fuzzybuckettree.prediction.NodePrediction;
@@ -16,12 +15,13 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 public class CarsCsvTrainToFile {
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
         List<TrainingEntry<String>> csvData = DemoUtils.loadCarData();
 
         List<FeatureBucketOptions> featureBucketOptions = List.of(
@@ -43,7 +43,7 @@ public class CarsCsvTrainToFile {
                 validationData.add(trainingEntry);
         }
 
-        TunerResult<String> result = tuner.train(csvData, validationData);
+        TunerResult<String> result = tuner.trainFrequency(csvData, csvData);
         System.out.println("Achieved final accuracy of " + result.getTotalAccuracy());
         result.getAccuracyReports().forEach((k, r) -> {
             System.out.println(k + " -> " + r.getCorrect() + " ? " + r.getSamples());

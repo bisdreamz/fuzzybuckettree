@@ -26,4 +26,15 @@ public interface PredictionHandler<T> {
 
     public PredictionHandler<T> newHandlerInstance();
 
+    /**
+     * @return True if this handler determines the data is stale and its associated node
+     * should be pruned
+     */
+    public boolean shouldPrune();
+
+    /**
+     * Called if this handler's node is being pruned, do any clean up work if applicable
+     */
+    public void cleanup();
+
 }

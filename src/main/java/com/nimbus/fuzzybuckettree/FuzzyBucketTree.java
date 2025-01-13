@@ -2,8 +2,6 @@ package com.nimbus.fuzzybuckettree;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbus.fuzzybuckettree.prediction.NodePrediction;
 import com.nimbus.fuzzybuckettree.prediction.Prediction;
 import com.nimbus.fuzzybuckettree.prediction.handlers.PredictionHandler;
@@ -13,11 +11,22 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class FuzzyBucketTree<T> {
+
+    private static final ScheduledExecutorService EXECUTOR = Executors.newScheduledThreadPool(2, r -> {
+        Thread thread = new Thread(r);
+        thread.setDaemon(true);
+        thread.setName("FuzzyTreeCleaner");
+        return thread;
+    });
 
     private static final NodePrediction NO_PRED = new NodePrediction<>(new Prediction<>(null, 0f), 0);
 
@@ -52,8 +61,11 @@ public class FuzzyBucketTree<T> {
      *                          prediction results from a leaf note. Common ones in {@link com.nimbus.fuzzybuckettree.prediction.PredictionHandlers}
      *                          or users may implement their own custom prediction logic, e.g. if a minimum number of
      *                          samples is required to consider a valid result.
+     * @param pruningWindow A duration which if positive will prune leafs and tree branches
+     *                      when determined stale by the {@link PredictionHandler#shouldPrune()}. For
+     *                      implementing data expiry in an online training environment.
      */
-    public FuzzyBucketTree(List<FeatureConfig> features, PredictionHandler<T> predictionHandler) {
+    public FuzzyBucketTree(List<FeatureConfig> features, PredictionHandler<T> predictionHandler, Duration pruningWindow) {
         this.features = features;
 
         if (features == null || features.isEmpty())
@@ -62,6 +74,33 @@ public class FuzzyBucketTree<T> {
 
         Map<String, FeatureConfig> featureCache = features.stream().collect(Collectors.toMap(FeatureConfig::label, f -> f));
         this.root = new FeatureNode<>(features.getFirst(), features, featureCache, predictionHandler.newHandlerInstance(), true);
+
+        if (pruningWindow != null && pruningWindow.isPositive()) {
+            EXECUTOR.scheduleAtFixedRate(() -> {
+                try {
+                    int pruned = this.root.prune();
+                    System.out.println("Pruned entries: " + pruned);
+                } catch (Exception e) {
+                    System.out.println("Failed to prune entries: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }, pruningWindow.toSeconds(), pruningWindow.toSeconds(), TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Construct a FuzzyBucketTree with the associated features and prediction handler. In most cases,
+     * this is the result of an auto-tuning exploration with {@link FuzzyBucketTuner}. This
+     * constructor has no pruning enabled and all leafs will be retained forever.
+     * @param features An ordered list of {@link FeatureConfig} indicating the features the tree will comprise,
+     *                 the per feature value count, and finally the per feature bucket value if applicable.
+     * @param predictionHandler A {@link PredictionHandler} instance which is respnsible for returning the
+     *                          prediction results from a leaf note. Common ones in {@link com.nimbus.fuzzybuckettree.prediction.PredictionHandlers}
+     *                          or users may implement their own custom prediction logic, e.g. if a minimum number of
+     *                          samples is required to consider a valid result.
+     */
+    public FuzzyBucketTree(List<FeatureConfig> features, PredictionHandler<T> predictionHandler) {
+        this(features, predictionHandler, Duration.ZERO);
     }
 
     /**

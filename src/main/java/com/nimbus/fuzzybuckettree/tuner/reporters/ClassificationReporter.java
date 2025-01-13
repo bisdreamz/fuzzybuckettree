@@ -29,7 +29,7 @@ public class ClassificationReporter<T> implements AccuracyReporter<T> {
     }
 
     @Override
-    public boolean record(T predicted, T actual) {
+    public synchronized boolean record(T predicted, T actual) {
         PredictionReport report = labelReports.computeIfAbsent(actual, voyd -> new PredictionReport());
 
         float weight = classWeights.computeIfAbsent(actual, voyd -> 1f);
