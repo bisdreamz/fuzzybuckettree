@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -43,13 +44,19 @@ public class FuzzyBucketTree<T> {
     private final FeatureNode<?, T> root;
     @JsonProperty("features")
     private final List<FeatureConfig> features;
+    @JsonProperty("pruning_window")
+    private Duration pruningWindow;
+    private ScheduledFuture cleanerTask;
 
     @JsonCreator
     public FuzzyBucketTree(
             @JsonProperty("root") FeatureNode<?, T> root,
-            @JsonProperty("features") List<FeatureConfig> features) {
+            @JsonProperty("features") List<FeatureConfig> features,
+            @JsonProperty("pruning_window") Duration pruningWindow) {
         this.root = root;
         this.features = features;
+        this.pruningWindow = pruningWindow;
+        updateCleanerTask(pruningWindow);
     }
 
     /**
@@ -74,18 +81,9 @@ public class FuzzyBucketTree<T> {
 
         Map<String, FeatureConfig> featureCache = features.stream().collect(Collectors.toMap(FeatureConfig::label, f -> f));
         this.root = new FeatureNode<>(features.getFirst(), features, featureCache, predictionHandler.newHandlerInstance(), true);
+        this.pruningWindow = pruningWindow;
 
-        if (pruningWindow != null && pruningWindow.isPositive()) {
-            EXECUTOR.scheduleAtFixedRate(() -> {
-                try {
-                    int pruned = this.root.prune();
-                    System.out.println("Pruned entries: " + pruned);
-                } catch (Exception e) {
-                    System.out.println("Failed to prune entries: " + e.getMessage());
-                    e.printStackTrace();
-                }
-            }, pruningWindow.toSeconds(), pruningWindow.toSeconds(), TimeUnit.SECONDS);
-        }
+        updateCleanerTask(pruningWindow);
     }
 
     /**
@@ -101,6 +99,35 @@ public class FuzzyBucketTree<T> {
      */
     public FuzzyBucketTree(List<FeatureConfig> features, PredictionHandler<T> predictionHandler) {
         this(features, predictionHandler, Duration.ZERO);
+    }
+
+    private void updateCleanerTask(Duration newPruningWindow) {
+        if (this.pruningWindow != null && newPruningWindow != null && this.pruningWindow.equals(newPruningWindow)
+                && this.cleanerTask != null)
+            return; // nothing to do it seems
+
+        this.pruningWindow = newPruningWindow;
+
+        if (this.cleanerTask != null) {
+            this.cleanerTask.cancel(false);
+            this.cleanerTask = null;
+        }
+
+        if (pruningWindow != null && pruningWindow.isPositive()) {
+            this.cleanerTask = EXECUTOR.scheduleAtFixedRate(() -> {
+                try {
+                    int pruned = this.root.prune();
+                    System.out.println("Pruned entries: " + pruned);
+                } catch (Exception e) {
+                    System.out.println("Failed to prune entries: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }, pruningWindow.toSeconds(), pruningWindow.toSeconds(), TimeUnit.SECONDS);
+        }
+    }
+
+    private void setPruningWindow(Duration pruningWindow) {
+        this.pruningWindow = pruningWindow;
     }
 
     /**
@@ -174,25 +201,6 @@ public class FuzzyBucketTree<T> {
     }
 
     /**
-     * Merges another FuzzyBucketTree into this one, combining their prediction data.
-     * Both trees must have identical feature configurations and prediction handler types.
-     *
-     * @param other The tree to merge into this one
-     * @throws IllegalArgumentException if the trees are incompatible
-     */
-    /**
-     * Merges another FuzzyBucketTree into this one, combining their prediction data.
-     * Both trees must have identical feature configurations and prediction handler types.
-     *
-     * @param other The tree to merge into this one
-     * @throws IllegalArgumentException if the trees are incompatible
-     */
-    /**
-     * Merges another FuzzyBucketTree into this one.
-     * Both trees must have identical feature configurations and prediction handler types.
-     * @param other The tree to merge into this one
-     */
-    /**
      * Merges another FuzzyBucketTree into this one.
      * Both trees must have identical feature configurations and prediction handler types.
      * @param other The tree to merge into this one
@@ -215,6 +223,30 @@ public class FuzzyBucketTree<T> {
      */
     public int leafCount() {
         return this.root.leafCount();
+    }
+
+    /**
+     * @return Interval at which nodes/leafs are evaluated for pruning
+     */
+    public Duration getPruningWindow() {
+        return this.pruningWindow;
+    }
+
+    public void enableOrUpdatePruning(Duration pruningWindow) {
+        updateCleanerTask(pruningWindow);
+    }
+
+    /**
+     * Shutdown cleaning tasks and perform any other cleanup work
+     * if this tree instance will no longer be used. Calls
+     * {@link FeatureNode#shutdown()} for every child node,
+     * which in turn calls {@link PredictionHandler#cleanup()}.
+     * Should not modify data, but should perform any tasks
+     * cleanup.
+     */
+    public void shutdown() {
+        this.cleanerTask.cancel(true);
+        this.root.shutdown();
     }
 
 }

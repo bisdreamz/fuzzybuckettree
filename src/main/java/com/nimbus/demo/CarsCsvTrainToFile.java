@@ -12,6 +12,7 @@ import com.nimbus.fuzzybuckettree.tuner.reporters.AccuracyReporter;
 import com.nimbus.fuzzybuckettree.tuner.reporters.ClassificationReporter;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -72,6 +73,8 @@ public class CarsCsvTrainToFile {
                         .collect(Collectors.joining(",")));
             }
         });
+
+        result.getTree().enableOrUpdatePruning(Duration.ofMinutes(1));
 
         result.getTree().saveModel("cars.fbt");
 

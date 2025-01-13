@@ -342,4 +342,16 @@ class FeatureNode<V, T> {
         return pruned.get();
     }
 
+    /**
+     * Perform any shutdown work on this and all child nodes
+     * if this instance will no longer be used. Should not modify tree
+     * structure or data, but should perform any clean up
+     * of remaining tasks or background work.
+     */
+    public void shutdown() {
+        this.predictionHandler.cleanup();
+
+        children.values().forEach(FeatureNode::shutdown);
+    }
+
 }

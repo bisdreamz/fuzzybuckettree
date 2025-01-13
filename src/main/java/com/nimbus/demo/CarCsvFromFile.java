@@ -21,6 +21,8 @@ public class CarCsvFromFile {
             reporter.record(p.getPrediction(), en.outcome());
         });
 
+        System.out.println("Cars model had pruning window of " + model.getPruningWindow().toSeconds());
+
         System.out.println("Achieved final accuracy on file loaded model of " + reporter.getTotalAccuracy());
         reporter.getAccuracyReports().forEach((k, r) -> {
             System.out.println(k + " -> " + r.getCorrect() + " ? " + r.getSamples());

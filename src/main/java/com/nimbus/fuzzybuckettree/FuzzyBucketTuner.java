@@ -251,15 +251,16 @@ public class FuzzyBucketTuner<T> {
      * bucket parameter exploration. Once the best config is found, a full training
      * and validation will be ran for the final returned tree model. This is the
      * slowest training method but has the most coverage of feature order evaluation.
-     * @param trainingData Data to train on as a list of individual map entries,
-     *             mapping each feature to their respective value(s).
-     *             The map must contain a <i>target</i> key which contains
-     *             the target prediction value for the given feature set.
-     * @param validationData Data set used solely for accurady validation and not training.
-     *                       Must also include the <i>target</i> value.
-     * @param sampleRate A sample rate percentage between 0 and 1. For example 0.2 would be sample of 20%
-     *                   of supplied data used for training and validation during the auto-tuning phases, which
-     *                   can take very long. 1f means no sampling.
+     *
+     * @param trainingData         Data to train on as a list of individual map entries,
+     *                             mapping each feature to their respective value(s).
+     *                             The map must contain a <i>target</i> key which contains
+     *                             the target prediction value for the given feature set.
+     * @param validationData       Data set used solely for accurady validation and not training.
+     *                             Must also include the <i>target</i> value.
+     * @param sampleRate           A sample rate percentage between 0 and 1. For example 0.2 would be sample of 20%
+     *                             of supplied data used for training and validation during the auto-tuning phases, which
+     *                             can take very long. 1f means no sampling.
      * @param earlyStoppingPercent A value between 0 and 1 which is a percentage of limit of feature permutations
      *                             to exit auto tuning early if no improvement is found. E.g. if there are 5,000
      *                             feature permutations and an early stopping of 0.1f, the tuning will end early
@@ -267,7 +268,7 @@ public class FuzzyBucketTuner<T> {
      * @return {@link TunerResult} with the best configration and accuracy results found.
      */
     public TunerResult<T> trainAllPermutations(List<TrainingEntry<T>> trainingData, List<TrainingEntry<T>> validationData,
-                                float sampleRate, float earlyStoppingPercent) {
+                                               float sampleRate, float earlyStoppingPercent) {
         if (trainingData.isEmpty() || validationData.isEmpty())
             throw new IllegalArgumentException("Training and validation data must not be empty");
 
@@ -746,6 +747,7 @@ public class FuzzyBucketTuner<T> {
         }
 
         statusFut.cancel(true);
+        scheduledExecutor.shutdown();
 
         return finalizeTuning(bestResult.get(), bestFeatureOrder.get(), trainingData, validationData);
     }
@@ -857,6 +859,8 @@ public class FuzzyBucketTuner<T> {
                 reporter.record(prediction.getPrediction(), entry.outcome());
             }
         }).get();
+
+        executor.shutdown();
 
         return new TunerResult<>(bestResult.getFeatureConfigs(), reporter, finalTree);
     }
