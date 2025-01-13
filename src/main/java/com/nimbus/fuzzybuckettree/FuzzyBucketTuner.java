@@ -630,12 +630,7 @@ public class FuzzyBucketTuner<T> {
                 .filter(f -> f.bucketOptions() != null && f.bucketOptions().length > 0)
                 .collect(Collectors.toList());
 
-        // Calculate bucket multiplier for parallelization decision
-        int bucketMultiplier = Math.max(1, bucketedFeatures.stream()
-                .mapToInt(f -> f.bucketOptions().length - 1)
-                .sum());
-
-        // Calculate frequencies and sort exact match features
+        // Calculate frequencies and sort exact match features by highest to lowest frequency
         Map<FeatureBucketOptions, Double> frequencies = calculateExactMatchFrequencies(trainingData, exactMatchFeatures);
         List<FeatureBucketOptions> orderedExactFeatures = exactMatchFeatures.stream()
                 .sorted((f1, f2) -> {
@@ -651,117 +646,134 @@ public class FuzzyBucketTuner<T> {
                 })
                 .collect(Collectors.toList());
 
-        // Generate positions for bucketed features
-        List<List<Integer>> bucketPositions = generateBucketPositions(
-                orderedExactFeatures.size(),
-                bucketedFeatures.size()
-        );
+        // First test baseline using frequency-ordered exact features
+        TunerResult<T> baselineResult = trainSet(
+                orderedExactFeatures,
+                trainingData,
+                validationData,
+                false,
+                false
+        ).get();
 
-        int totalCombinations = bucketPositions.size();
-        if (totalCombinations == 0 || totalCombinations == Integer.MAX_VALUE)
-            throw new IllegalArgumentException("Too few or too many feature combinations!");
+        AtomicReference<TunerResult<T>> bestResult = new AtomicReference<>(baselineResult);
+        AtomicReference<List<FeatureBucketOptions>> bestFeatureOrder = new AtomicReference<>(new ArrayList<>(orderedExactFeatures));
+        AtomicReference<Float> bestAccuracy = new AtomicReference<>(baselineResult.getTotalAccuracy());
 
-        AtomicInteger complete = new AtomicInteger();
-        ScheduledFuture statusFut = startMonitor(complete, totalCombinations);
+        System.out.println("Baseline accuracy with frequency order: " + baselineResult.getTotalAccuracy() +
+                " with feature order: " + orderedExactFeatures.stream()
+                .map(FeatureBucketOptions::label)
+                .collect(Collectors.joining(" -> ")));
 
-        boolean mainLoopSemaphore = bucketMultiplier == 1;
-        CountDownLatch latch = new CountDownLatch(1);
-        AtomicBoolean shouldStop = new AtomicBoolean(false);
-        AtomicReference<TunerResult<T>> bestResult = new AtomicReference<>();
-        AtomicReference<List<FeatureBucketOptions>> bestFeatureOrder = new AtomicReference<>();
-        AtomicReference<Float> bestAccuracy = new AtomicReference<>(0f);
+        // If we have bucketed features, test different positions while maintaining exact match order
+        ScheduledFuture statusFut = null;
+        if (!bucketedFeatures.isEmpty()) {
+            // Calculate bucket multiplier for parallelization decision
+            int bucketMultiplier = Math.max(1, bucketedFeatures.stream()
+                    .mapToInt(f -> f.bucketOptions().length - 1)
+                    .sum());
 
-        try {
-            for (List<Integer> positions : bucketPositions) {
-                if (shouldStop.get())
-                    break;
+            // Generate positions for bucketed features
+            List<List<Integer>> bucketPositions = generateBucketPositions(
+                    orderedExactFeatures.size(),
+                    bucketedFeatures.size()
+            );
 
-                if (mainLoopSemaphore)
-                    semaphore.acquireUninterruptibly();
+            int totalCombinations = bucketPositions.size();
+            if (totalCombinations == 0 || totalCombinations == Integer.MAX_VALUE)
+                throw new IllegalArgumentException("Too few or too many feature combinations!");
 
-                CompletableFuture<Void> fut = new CompletableFuture<>();
-                executor.execute(() -> {
-                    try {
-                        // Create feature order for this combination
-                        List<FeatureBucketOptions> testFeatures = new ArrayList<>(orderedExactFeatures);
-                        for (int i = 0; i < bucketedFeatures.size(); i++) {
-                            testFeatures.add(positions.get(i), bucketedFeatures.get(i));
-                        }
+            boolean mainLoopSemaphore = bucketMultiplier == 1;
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicBoolean shouldStop = new AtomicBoolean(false);
+            AtomicInteger complete = new AtomicInteger();
 
-                        // Test this feature order
-                        TunerResult<T> result = trainSet(
-                                testFeatures,
-                                trainingData,
-                                validationData,
-                                false,
-                                !mainLoopSemaphore
-                        ).get();
+            statusFut = startMonitor(complete, bucketPositions.size());
 
-                        if (result == null)
-                            throw new RuntimeException("Bucket permutation trainSet call returned null TunerResult!");
+            try {
+                for (List<Integer> positions : bucketPositions) {
+                    if (shouldStop.get())
+                        break;
 
-                        // Synchronized block for updating best results
-                        synchronized (this) {
-                            float resAccuracy = result.getTotalAccuracy();
-                            float currentBest = bestAccuracy.get();
+                    if (mainLoopSemaphore)
+                        semaphore.acquireUninterruptibly();
 
-                            if (resAccuracy > currentBest) {
-                                bestAccuracy.set(resAccuracy);
-                                bestResult.set(result);
-                                bestFeatureOrder.set(new ArrayList<>(testFeatures));
-
-                                System.out.println("New best accuracy: " + resAccuracy + " with feature order: " +
-                                        testFeatures.stream().map(FeatureBucketOptions::label)
-                                                .collect(Collectors.joining(" -> ")));
+                    CompletableFuture<Void> fut = new CompletableFuture<>();
+                    executor.execute(() -> {
+                        try {
+                            // Create feature order for this combination
+                            List<FeatureBucketOptions> testFeatures = new ArrayList<>(orderedExactFeatures);
+                            for (int i = 0; i < bucketedFeatures.size(); i++) {
+                                testFeatures.add(positions.get(i), bucketedFeatures.get(i));
                             }
-                        }
 
-                        if (complete.incrementAndGet() == totalCombinations) {
-                            latch.countDown();
-                            System.out.println("Finished all combinations");
-                            shouldStop.set(true);
-                            return;
-                        }
+                            // Test this feature order
+                            TunerResult<T> result = trainSet(
+                                    testFeatures,
+                                    trainingData,
+                                    validationData,
+                                    false,
+                                    !mainLoopSemaphore
+                            ).get();
 
-                        if (result.getTotalAccuracy() == 1f && latch.getCount() == 1) {
-                            System.out.println("Early exit, found perfect result");
+                            if (result == null)
+                                throw new RuntimeException("Bucket permutation trainSet call returned null TunerResult!");
+
+                            // Synchronized block for updating best results
+                            synchronized (this) {
+                                float resAccuracy = result.getTotalAccuracy();
+                                float currentBest = bestAccuracy.get();
+
+                                if (resAccuracy > currentBest) {
+                                    bestAccuracy.set(resAccuracy);
+                                    bestResult.set(result);
+                                    bestFeatureOrder.set(new ArrayList<>(testFeatures));
+
+                                    System.out.println("New best accuracy: " + resAccuracy + " with feature order: " +
+                                            testFeatures.stream().map(FeatureBucketOptions::label)
+                                                    .collect(Collectors.joining(" -> ")));
+                                }
+                            }
+
+                            if (complete.incrementAndGet() == totalCombinations) {
+                                latch.countDown();
+                                System.out.println("Finished all combinations");
+                                shouldStop.set(true);
+                                return;
+                            }
+
+                            if (result.getTotalAccuracy() == 1f && latch.getCount() == 1) {
+                                System.out.println("Early exit, found perfect result");
+                                latch.countDown();
+                                shouldStop.set(true);
+                            }
+                        } catch (Throwable e) {
                             latch.countDown();
-                            shouldStop.set(true);
+                            System.out.println(e.getMessage());
+                            e.printStackTrace();
+                            System.exit(-1);
+                        } finally {
+                            fut.complete(null);
                         }
+                    });
+
+                    try {
+                        fut.get();
                     } catch (Throwable e) {
-                        latch.countDown();
-                        System.out.println(e.getMessage());
-                        e.printStackTrace();
-                        System.exit(-1);
-                    } finally {
-                        fut.complete(null);
+                        throw new RuntimeException(e);
                     }
-                });
 
-                try {
-                    fut.get();
-                } catch (Throwable e) {
-                    throw new RuntimeException(e);
+                    if (mainLoopSemaphore)
+                        semaphore.release();
                 }
-
-                if (mainLoopSemaphore)
-                    semaphore.release();
-            }
-
-            if (bestResult.get() == null) {
-                throw new RuntimeException("No valid results found during training");
-            }
-
-            statusFut.cancel(true);
-            scheduledExecutor.shutdown();
-
-            return finalizeTuning(bestResult.get(), bestFeatureOrder.get(), trainingData, validationData);
-
-        } finally {
-            if (statusFut != null) {
-                statusFut.cancel(true);
+            } finally {
+                if (statusFut != null) {
+                    statusFut.cancel(true);
+                    executor.shutdownNow();
+                }
             }
         }
+
+        return finalizeTuning(bestResult.get(), bestFeatureOrder.get(), trainingData, validationData);
     }
 
     private Map<FeatureBucketOptions, Double> calculateExactMatchFrequencies(
@@ -774,10 +786,15 @@ public class FuzzyBucketTuner<T> {
         // Single pass through the data
         for (TrainingEntry<T> entry : trainingData) {
             for (FeatureBucketOptions feature : exactMatchFeatures) {
-                Object value = entry.features().get(feature.label());
+                Object[] value = entry.features().get(feature.label());
                 if (value != null) {
+                    // Create a string key from the array values
+                    String valueKey = String.join(":", Arrays.stream(value)
+                            .map(Object::toString)
+                            .collect(Collectors.toList()));
+
                     valueCounts.get(feature)
-                            .computeIfAbsent(value, k -> new LongAdder())
+                            .computeIfAbsent(valueKey, k -> new LongAdder())
                             .increment();
                 }
             }
@@ -786,17 +803,16 @@ public class FuzzyBucketTuner<T> {
         Map<FeatureBucketOptions, Double> frequencies = new HashMap<>();
         for (FeatureBucketOptions feature : exactMatchFeatures) {
             Map<Object, LongAdder> counts = valueCounts.get(feature);
+
+            // Total number of samples that have this feature
             long totalSamples = counts.values().stream()
                     .mapToLong(LongAdder::sum)
                     .sum();
-            double uniqueValues = counts.size();
 
-            if (totalSamples == 0 || uniqueValues == 0) {
-                throw new IllegalStateException(
-                        "Feature " + feature.label() + " has no occurrences in training data"
-                );
-            }
+            // Number of unique values for this feature
+            int uniqueValues = counts.keySet().size();
 
+            // Average samples per unique value
             frequencies.put(feature, (double) totalSamples / uniqueValues);
         }
 
@@ -807,10 +823,12 @@ public class FuzzyBucketTuner<T> {
         List<List<Integer>> positions = new ArrayList<>();
 
         if (bucketedFeatureCount == 0) {
+            // For exact match only, we just use the frequency-sorted order
             positions.add(new ArrayList<>());
             return positions;
         }
 
+        // With bucketed features, generate valid positions while maintaining exact feature order
         int totalPositions = exactFeatureCount + bucketedFeatureCount;
         generateValidCombinations(
                 new int[bucketedFeatureCount],

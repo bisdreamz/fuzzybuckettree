@@ -26,12 +26,12 @@ public class CarsCsvTrainToFile {
         List<TrainingEntry<String>> csvData = DemoUtils.loadCarData();
 
         List<FeatureBucketOptions> featureBucketOptions = List.of(
-                new FeatureBucketOptions("price", FeatureValueType.STRING, 1),
+                new FeatureBucketOptions("safety", FeatureValueType.STRING, 1),
+                new FeatureBucketOptions("lugboot", FeatureValueType.STRING, 1),
                 new FeatureBucketOptions("maint", FeatureValueType.STRING, 1),
                 new FeatureBucketOptions("doors", FeatureValueType.STRING,1),
                 new FeatureBucketOptions("persons", FeatureValueType.STRING, 1),
-                new FeatureBucketOptions("lugboot", FeatureValueType.STRING, 1),
-                new FeatureBucketOptions("safety", FeatureValueType.STRING, 1)
+                new FeatureBucketOptions("price", FeatureValueType.STRING, 1)
         );
 
         FuzzyBucketTuner<String> tuner = new FuzzyBucketTuner<>(featureBucketOptions,
@@ -44,7 +44,7 @@ public class CarsCsvTrainToFile {
                 validationData.add(trainingEntry);
         }
 
-        TunerResult<String> result = tuner.trainFrequency(csvData, csvData);
+        TunerResult<String> result = tuner.trainFrequency(FuzzyBucketTuner.sampleList(csvData, 0.5f), csvData);
         System.out.println("Achieved final accuracy of " + result.getTotalAccuracy());
         result.getAccuracyReports().forEach((k, r) -> {
             System.out.println(k + " -> " + r.getCorrect() + " ? " + r.getSamples());
