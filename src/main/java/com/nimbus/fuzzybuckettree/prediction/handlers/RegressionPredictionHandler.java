@@ -29,6 +29,16 @@ public class RegressionPredictionHandler implements PredictionHandler<Float> {
     }
 
     @Override
+    public boolean shouldPrune() {
+        return false;
+    }
+
+    @Override
+    public void cleanup() {
+
+    }
+
+    @Override
     public void merge(PredictionHandler<Float> other) {
         if (!(other instanceof RegressionPredictionHandler))
             throw new IllegalArgumentException("Cant merge other prediction handler into a RegressionPredictionHandler");

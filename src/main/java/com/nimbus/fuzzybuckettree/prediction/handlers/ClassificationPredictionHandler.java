@@ -3,7 +3,6 @@ package com.nimbus.fuzzybuckettree.prediction.handlers;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.nimbus.fuzzybuckettree.prediction.Prediction;
-import com.nimbus.fuzzybuckettree.prediction.PredictionHandlers;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -39,22 +38,20 @@ public class ClassificationPredictionHandler<T> implements PredictionHandler<T> 
     }
 
     @Override
-    public void record(T outcomeValue) {
-        synchronized(this) {
-            Integer count = labels.get(outcomeValue);
-            int newCount = (count == null) ? 1 : count + 1;
-            labels.put(outcomeValue, newCount);
-            totalCount++;
+    public synchronized void record(T outcomeValue) {
+        Integer count = labels.get(outcomeValue);
+        int newCount = (count == null) ? 1 : count + 1;
+        labels.put(outcomeValue, newCount);
+        totalCount++;
 
-            if (newCount > highestCount) {
-                highestCount = newCount;
-                mostFrequentLabel = outcomeValue;
-            }
+        if (newCount > highestCount) {
+            highestCount = newCount;
+            mostFrequentLabel = outcomeValue;
         }
     }
 
     @Override
-    public Prediction prediction() {
+    public synchronized Prediction prediction() {
         T currentLabel = mostFrequentLabel;
         int currentHighest = highestCount;
         int currentTotal = totalCount;
@@ -96,4 +93,13 @@ public class ClassificationPredictionHandler<T> implements PredictionHandler<T> 
         }
     }
 
+    @Override
+    public boolean shouldPrune() {
+        return false;
+    }
+
+    @Override
+    public void cleanup() {
+
+    }
 }

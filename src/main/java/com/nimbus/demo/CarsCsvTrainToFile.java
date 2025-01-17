@@ -1,7 +1,6 @@
 package com.nimbus.demo;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.nimbus.fuzzybuckettree.FeatureValueType;
 import com.nimbus.fuzzybuckettree.FuzzyBucketTuner;
 import com.nimbus.fuzzybuckettree.prediction.NodePrediction;
@@ -13,24 +12,26 @@ import com.nimbus.fuzzybuckettree.tuner.reporters.AccuracyReporter;
 import com.nimbus.fuzzybuckettree.tuner.reporters.ClassificationReporter;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 public class CarsCsvTrainToFile {
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
         List<TrainingEntry<String>> csvData = DemoUtils.loadCarData();
 
         List<FeatureBucketOptions> featureBucketOptions = List.of(
-                new FeatureBucketOptions("price", FeatureValueType.STRING, 1),
+                new FeatureBucketOptions("safety", FeatureValueType.STRING, 1),
+                new FeatureBucketOptions("lugboot", FeatureValueType.STRING, 1),
                 new FeatureBucketOptions("maint", FeatureValueType.STRING, 1),
                 new FeatureBucketOptions("doors", FeatureValueType.STRING,1),
                 new FeatureBucketOptions("persons", FeatureValueType.STRING, 1),
-                new FeatureBucketOptions("lugboot", FeatureValueType.STRING, 1),
-                new FeatureBucketOptions("safety", FeatureValueType.STRING, 1)
+                new FeatureBucketOptions("price", FeatureValueType.STRING, 1)
         );
 
         FuzzyBucketTuner<String> tuner = new FuzzyBucketTuner<>(featureBucketOptions,
@@ -43,7 +44,7 @@ public class CarsCsvTrainToFile {
                 validationData.add(trainingEntry);
         }
 
-        TunerResult<String> result = tuner.train(csvData, validationData);
+        TunerResult<String> result = tuner.trainFrequency(FuzzyBucketTuner.sampleList(csvData, 0.5f), csvData);
         System.out.println("Achieved final accuracy of " + result.getTotalAccuracy());
         result.getAccuracyReports().forEach((k, r) -> {
             System.out.println(k + " -> " + r.getCorrect() + " ? " + r.getSamples());
@@ -72,6 +73,8 @@ public class CarsCsvTrainToFile {
                         .collect(Collectors.joining(",")));
             }
         });
+
+        result.getTree().enableOrUpdatePruning(Duration.ofMinutes(1));
 
         result.getTree().saveModel("cars.fbt");
 
