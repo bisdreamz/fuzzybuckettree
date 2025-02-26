@@ -323,7 +323,6 @@ class FeatureNode<V, T> {
             return 0;
         }
 
-
         // Otherwise, recursively check children
         AtomicInteger pruned = new AtomicInteger();
         synchronized (this) {
