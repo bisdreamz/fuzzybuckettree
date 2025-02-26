@@ -36,8 +36,6 @@ class FeatureNode<V, T> {
     @JsonIgnore
     private transient FeatureConfig nextFeature;
 
-    private ScheduledFuture cleaningTask;
-
     /**
      * Mapping of the hash value of the unique feature value combinations to
      * their related child nodes, if any
@@ -313,33 +311,45 @@ class FeatureNode<V, T> {
      * {@link PredictionHandler} implementation
      * @return Number of pruned leaf entries
      */
-    public int prune() {
-        if (children.isEmpty()) {
-            // this is a leaf, clean ourselves up if needed
-            if (predictionHandler.shouldPrune()) {
-                predictionHandler.cleanup();
-                return 1;
-            }
+    int prune() {
+        if (this.predictionHandler.shouldPrune() && !this.isRoot) {
+            int count = this.leafCount();
+            this.shutdown();
+            return count;
+        }
 
+        if (children.isEmpty()) {
+            // were a leaf, do nothin
             return 0;
         }
 
-        // Not a leaf, check for any child nodes needing pruning
-        AtomicInteger pruned = new AtomicInteger();
-        children.values().removeIf(child -> {
-            // remove node from tree if it ends up empty
-            pruned.addAndGet(child.prune());
-            return child.children.isEmpty();
-        });
 
-        // Whew we ended up empty, clean up our act and get out of here
-        if (children.isEmpty()) {
-            if (!predictionHandler.shouldPrune())
-                throw new RuntimeException("Error! All children pruned but shared predictonHandler survived!");
-            predictionHandler.cleanup();
+        // Otherwise, recursively check children
+        AtomicInteger pruned = new AtomicInteger();
+        synchronized (this) {
+            children.values().removeIf(child -> {
+                boolean shouldPrune = child.shouldPrune();
+                if (shouldPrune) {
+                    pruned.addAndGet(child.leafCount());
+                    child.shutdown();
+                } else {
+                    pruned.addAndGet(child.prune());
+                }
+                return shouldPrune;
+            });
+
+            // If all children were removed, check if we should prune ourselves
+            if (children.isEmpty() && !this.isRoot) {
+                shutdown();
+                pruned.incrementAndGet();
+            }
         }
 
         return pruned.get();
+    }
+
+    boolean shouldPrune() {
+        return predictionHandler.shouldPrune() || this.predictionHandler == null;
     }
 
     /**
@@ -349,9 +359,17 @@ class FeatureNode<V, T> {
      * of remaining tasks or background work.
      */
     public void shutdown() {
-        this.predictionHandler.cleanup();
+        if (this.predictionHandler != null)
+            this.predictionHandler.cleanup();
 
-        children.values().forEach(FeatureNode::shutdown);
+        if (this.children != null) {
+            children.values().forEach(FeatureNode::shutdown);
+            children.clear();
+        }
+
+        this.nextFeature = null;
+        this.featureCache = null;
+        this.allFeatures = null;
     }
 
 }

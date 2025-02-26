@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
 
 public class FuzzyBucketTree<T> {
 
-    private static final ScheduledExecutorService EXECUTOR = Executors.newScheduledThreadPool(2, r -> {
+    private static final ScheduledExecutorService EXECUTOR = Executors.newScheduledThreadPool(4, r -> {
         Thread thread = new Thread(r);
         thread.setDaemon(true);
         thread.setName("FuzzyTreeCleaner");
@@ -103,7 +103,7 @@ public class FuzzyBucketTree<T> {
 
     private void updateCleanerTask(Duration newPruningWindow) {
         if (this.pruningWindow != null && newPruningWindow != null && this.pruningWindow.equals(newPruningWindow)
-                && this.cleanerTask != null)
+                && this.cleanerTask != null && !this.cleanerTask.isCancelled())
             return; // nothing to do it seems
 
         this.pruningWindow = newPruningWindow;
@@ -117,7 +117,6 @@ public class FuzzyBucketTree<T> {
             this.cleanerTask = EXECUTOR.scheduleAtFixedRate(() -> {
                 try {
                     int pruned = this.root.prune();
-                    System.out.println("Pruned entries: " + pruned);
                 } catch (Exception e) {
                     System.out.println("Failed to prune entries: " + e.getMessage());
                     e.printStackTrace();
